@@ -1,0 +1,20 @@
+# requirements-dev.txt
+# ---------------------------------------------------------------------------
+# Dipendenze di sviluppo / test. Separa il toolchain di test da quello di
+# runtime, ma include anche quest'ultimo via -r così un singolo comando basta:
+#
+#     pip install -r requirements-dev.txt
+#
+# Nota: 'promptfoo' (eval Livello 2) NON è qui perché è un tool Node, da usare
+# via `npx` — vedi TESTING_PLAN.md §4.4. I backend LLM pesanti
+# (llama-cpp-python, groq) restano in requirements.txt: nei test sono sempre
+# mockati e importati lazy, quindi non servono per far girare la suite.
+# ---------------------------------------------------------------------------
+-r requirements.txt
+
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+pytest-mock>=3.14.0
+pytest-cov>=5.0.0          # coverage report (pytest --cov)
+respx>=0.21.0             # mock di httpx (extractor OpenAI-compat / webhook)
+anyio>=4.0.0             # utility async per i test

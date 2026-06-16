@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Lead Qualifier</title>
+    <meta
+      name="description"
+      content="Interfaccia per la qualificazione lead e l'onboarding cataloghi (air-gapped)."
+    />
+  </head>
+  <body>
+    <div
+      x-data="{ view: 'qualify', sidebarOpen: false }"
+      x-cloak
+      class="min-h-screen flex"
+    >
+      <!-- ── Overlay mobile ─────────────────────────────────────────────── -->
+      <div
+        x-show="sidebarOpen"
+        x-transition.opacity
+        @click="sidebarOpen = false"
+        class="fixed inset-0 z-30 bg-slate-900/40 md:hidden"
+      ></div>
+
+      <!-- ── Sidebar ────────────────────────────────────────────────────── -->
+      <aside
+        class="fixed md:static inset-y-0 left-0 z-40 w-64 shrink-0 bg-white border-r border-slate-200 flex flex-col transform transition-transform duration-200 md:translate-x-0"
+        :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'"
+      >
+        <div class="h-16 flex items-center gap-2.5 px-5 border-b border-slate-200">
+          <span
+            class="inline-flex w-9 h-9 items-center justify-center rounded-lg bg-indigo-600 text-white"
+          >
+            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z"/></svg>
+          </span>
+          <div class="leading-tight">
+            <p class="font-semibold text-slate-800">Lead Qualifier</p>
+            <p class="text-xs text-slate-400">AI Console</p>
+          </div>
+        </div>
+
+        <nav class="flex-1 p-3 space-y-1">
+          <a
+            class="nav-link"
+            :class="{ 'nav-link--active': view === 'qualify' }"
+            @click="view = 'qualify'; sidebarOpen = false"
+          >
+            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span>Qualifica Lead</span>
+          </a>
+          <a
+            class="nav-link"
+            :class="{ 'nav-link--active': view === 'ingest' }"
+            @click="view = 'ingest'; sidebarOpen = false"
+          >
+            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
+            <span>Gestione Cataloghi</span>
+          </a>
+          <a
+            class="nav-link"
+            :class="{ 'nav-link--active': view === 'settings' }"
+            @click="view = 'settings'; sidebarOpen = false"
+          >
+            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/></svg>
+            <span>Impostazioni</span>
+          </a>
+        </nav>
+
+        <div class="p-4 border-t border-slate-200">
+          <span
+            class="badge"
+            :class="$store.connection.apiConnected ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'"
+          >
+            <span
+              class="w-2 h-2 rounded-full"
+              :class="$store.connection.apiConnected ? 'bg-emerald-500' : 'bg-rose-500'"
+            ></span>
+            <span x-text="$store.connection.apiConnected ? 'API Connected' : 'API Offline'"></span>
+          </span>
+        </div>
+      </aside>
+
+      <!-- ── Colonna principale ─────────────────────────────────────────── -->
+      <div class="flex-1 flex flex-col min-w-0">
+        <!-- Header -->
+        <header
+          class="sticky top-0 z-20 bg-white/90 backdrop-blur border-b border-slate-200"
+        >
+          <div class="flex items-center gap-3 px-4 sm:px-6 h-16">
+            <button
+              class="md:hidden text-slate-600 hover:text-slate-900"
+              @click="sidebarOpen = !sidebarOpen"
+              aria-label="Apri menu"
+            >
+              <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="18" y2="18"/></svg>
+            </button>
+
+            <h1
+              class="text-lg font-semibold text-slate-800 truncate"
+              x-text="({ qualify: 'Qualifica Lead', ingest: 'Gestione Cataloghi', settings: 'Impostazioni' })[view]"
+            ></h1>
+
+            <div class="ml-auto flex items-center gap-2 sm:gap-3">
+              <!-- Selettore Tenant + nuovo tenant (B2) -->
+              <div class="hidden sm:flex items-center gap-2">
+                <label class="text-xs text-slate-500">Tenant</label>
+                <select
+                  class="input-text !w-auto py-1.5 text-sm"
+                  x-model="$store.connection.tenantId"
+                >
+                  <template x-for="t in $store.connection.tenants" :key="t">
+                    <option :value="t" x-text="t"></option>
+                  </template>
+                </select>
+                <div class="flex items-center gap-1">
+                  <input
+                    type="text"
+                    class="input-text !w-36 py-1.5 text-sm"
+                    placeholder="Nuovo tenant…"
+                    x-model="$store.connection.newTenant"
+                    @keydown.enter.prevent="$store.connection.addTenant($store.connection.newTenant)"
+                  />
+                  <button
+                    class="btn-primary !px-2.5 !py-1.5 text-sm"
+                    title="Aggiungi e seleziona il tenant"
+                    @click="$store.connection.addTenant($store.connection.newTenant)"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+
+              <!-- Badge API -->
+              <span
+                class="badge"
+                :class="$store.connection.apiConnected ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'"
+              >
+                <span
+                  class="w-2 h-2 rounded-full"
+                  :class="$store.connection.apiConnected ? 'bg-emerald-500' : 'bg-rose-500'"
+                ></span>
+                <span class="hidden sm:inline" x-text="$store.connection.apiConnected ? 'API Connected' : 'API Offline'"></span>
+              </span>
+
+              <!-- Icona utente -->
+              <span
+                class="inline-flex w-9 h-9 items-center justify-center rounded-full bg-slate-100 text-slate-500"
+              >
+                <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+              </span>
+            </div>
+          </div>
+
+          <!-- Selettore tenant compatto (mobile) -->
+          <div class="sm:hidden flex items-center gap-2 px-4 pb-3">
+            <select
+              class="input-text !w-auto flex-1 py-1.5 text-sm"
+              x-model="$store.connection.tenantId"
+            >
+              <template x-for="t in $store.connection.tenants" :key="t">
+                <option :value="t" x-text="t"></option>
+              </template>
+            </select>
+            <input
+              type="text"
+              class="input-text flex-1 py-1.5 text-sm"
+              placeholder="Nuovo tenant…"
+              x-model="$store.connection.newTenant"
+              @keydown.enter.prevent="$store.connection.addTenant($store.connection.newTenant)"
+            />
+            <button
+              class="btn-primary !px-3 !py-1.5 text-sm"
+              @click="$store.connection.addTenant($store.connection.newTenant)"
+            >
+              +
+            </button>
+          </div>
+        </header>
+
+        <!-- Main content -->
+        <main class="flex-1 overflow-y-auto">
+          <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <!-- ════════════════════════════════════════════════════════════ -->
+            <!-- FASE 2 — Qualificazione Lead                                  -->
+            <!-- ════════════════════════════════════════════════════════════ -->
+            <section
+              x-show="view === 'qualify'"
+              class="grid grid-cols-1 lg:grid-cols-2 gap-6"
+            >
+              <!-- Colonna input -->
+              <div class="card flex flex-col gap-4">
+                <div>
+                  <h2 class="font-semibold text-slate-800">Richiesta del lead</h2>
+                  <p class="text-sm text-slate-500">
+                    Incolla l'email o la richiesta; il grafo AI estrae i servizi e
+                    calcola il preventivo.
+                  </p>
+                </div>
+                <textarea
+                  class="input-text h-64 resize-none"
+                  placeholder="Incolla qui l'email o la richiesta del lead…"
+                  x-model="$store.qualify.inputText"
+                  :disabled="$store.qualify.isLoading"
+                ></textarea>
+                <div class="flex items-center justify-between gap-3">
+                  <span
+                    class="text-xs"
+                    :class="$store.qualify.charCount < 10 ? 'text-rose-500' : 'text-slate-400'"
+                    x-text="$store.qualify.charCount + ' caratteri (min 10)'"
+                  ></span>
+                  <button
+                    class="btn-primary"
+                    :disabled="!$store.qualify.canSubmit"
+                    @click="App.generateQuote()"
+                  >
+                    <svg
+                      x-show="$store.qualify.isLoading"
+                      class="spinner w-4 h-4"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                    >
+                      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                      <path class="opacity-75" d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" stroke-linecap="round" />
+                    </svg>
+                    <span x-text="$store.qualify.isLoading ? 'Elaborazione…' : 'Genera Preventivo AI'"></span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Colonna elaborazione + risultato -->
+              <div class="flex flex-col gap-6">
+                <!-- Console SSE -->
+                <div class="card !p-0 overflow-hidden">
+                  <div class="flex items-center gap-2 px-4 py-2.5 border-b border-slate-200 bg-slate-50">
+                    <span class="w-2.5 h-2.5 rounded-full bg-rose-400"></span>
+                    <span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+                    <span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+                    <span class="ml-2 text-xs font-medium text-slate-500">Console di elaborazione (SSE)</span>
+                  </div>
+                  <div
+                    class="terminal h-64 !rounded-none"
+                    x-ref="qterm"
+                    x-effect="$store.qualify.logs.length; ui.autoscroll($refs.qterm)"
+                  >
+                    <template x-if="$store.qualify.logs.length === 0">
+                      <p class="text-slate-500">In attesa di una richiesta…</p>
+                    </template>
+                    <template x-for="(line, i) in $store.qualify.logs" :key="i">
+                      <div
+                        class="whitespace-pre-wrap leading-relaxed"
+                        :class="ui.logLineClass(line)"
+                        x-text="line"
+                      ></div>
+                    </template>
+                  </div>
+                </div>
+
+                <!-- Errore -->
+                <template x-if="$store.qualify.error">
+                  <div class="card !border-rose-200 !bg-rose-50">
+                    <p class="font-semibold text-rose-700">Errore</p>
+                    <p class="text-sm text-rose-700 mt-1" x-text="$store.qualify.error"></p>
+                  </div>
+                </template>
+
+                <!-- Card Preventivo -->
+                <template x-if="$store.qualify.result && !$store.qualify.error">
+                  <div class="card">
+                    <p class="text-sm text-slate-500">Preventivo generato</p>
+                    <p
+                      class="text-4xl font-bold text-slate-800 mt-1"
+                      x-text="ui.formatMoney($store.qualify.result.total_quote) + ' €'"
+                    ></p>
+
+                    <hr class="my-4 border-slate-100" />
+
+                    <h3 class="text-sm font-semibold text-slate-700 mb-2">Servizi mappati</h3>
+                    <template x-if="(($store.qualify.result.mapped_services) || []).length === 0">
+                      <p class="text-sm text-slate-500">Nessun servizio mappato per questa richiesta.</p>
+                    </template>
+                    <ul class="divide-y divide-slate-100">
+                      <template x-for="(svc, i) in ($store.qualify.result.mapped_services || [])" :key="i">
+                        <li class="flex items-start justify-between gap-3 py-2.5">
+                          <div class="min-w-0">
+                            <p class="font-medium text-slate-800 truncate" x-text="svc.matched_name || svc.service || '—'"></p>
+                            <p class="text-xs text-slate-400" x-text="'distanza: ' + (svc.distance != null ? Number(svc.distance).toFixed(4) : 'n/d')"></p>
+                          </div>
+                          <p class="font-semibold text-slate-800 whitespace-nowrap" x-text="ui.formatMoney(svc.price) + ' ' + (svc.unit || '€')"></p>
+                        </li>
+                      </template>
+                    </ul>
+                  </div>
+                </template>
+
+                <!-- Invia al cliente: email pronta + PDF -->
+                <template x-if="$store.qualify.result && !$store.qualify.error">
+                  <div class="card" x-data="{ copied: false }">
+                    <div class="flex items-center justify-between gap-3">
+                      <h3 class="font-semibold text-slate-800">Invia al cliente</h3>
+                      <span
+                        class="text-xs text-slate-400 truncate"
+                        x-show="quote.extractEmail($store.qualify.inputText)"
+                        x-text="'A: ' + quote.extractEmail($store.qualify.inputText)"
+                      ></span>
+                    </div>
+
+                    <!-- Destinatario (Spett.le) -->
+                    <div class="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <input type="text" class="input-text text-sm" placeholder="Azienda cliente" x-model="$store.qualify.recipientCompany" />
+                      <input type="text" class="input-text text-sm" placeholder="Referente" x-model="$store.qualify.recipientName" />
+                      <input type="email" class="input-text text-sm" placeholder="email@cliente.it" x-model="$store.qualify.recipientEmail" />
+                    </div>
+
+                    <!-- Riepilogo importi -->
+                    <div class="mt-3 rounded-lg bg-slate-50 border border-slate-200 p-3 text-sm">
+                      <div class="flex justify-between">
+                        <span class="text-slate-500">Imponibile</span>
+                        <span class="text-slate-700" x-text="quote.formatMoneyIt(quote.computeTotals($store.qualify.result, $store.settings).subtotal)"></span>
+                      </div>
+                      <template x-if="$store.settings.vatEnabled">
+                        <div class="flex justify-between mt-1">
+                          <span class="text-slate-500" x-text="'IVA (' + Math.round($store.settings.vatRate * 100) + '%)'"></span>
+                          <span class="text-slate-700" x-text="quote.formatMoneyIt(quote.computeTotals($store.qualify.result, $store.settings).vat)"></span>
+                        </div>
+                      </template>
+                      <div class="flex justify-between mt-1 font-semibold">
+                        <span class="text-slate-800">Totale</span>
+                        <span class="text-slate-800" x-text="quote.formatMoneyIt(quote.computeTotals($store.qualify.result, $store.settings).total)"></span>
+                      </div>
+                    </div>
+
+                    <!-- Anteprima email -->
+                    <pre
+                      class="mt-3 max-h-56 overflow-y-auto whitespace-pre-wrap rounded-lg border border-slate-200 bg-white p-3 text-xs font-mono text-slate-600"
+                      x-text="quote.previewEmail($store.qualify.result, $store.settings)"
+                    ></pre>
+
+                    <!-- Azioni -->
+                    <div class="mt-3 flex flex-wrap gap-3">
+                      <button
+                        class="btn-primary"
+                        @click="App.copyQuoteEmail().then(ok => { copied = ok; if (ok) setTimeout(() => copied = false, 1600); })"
+                      >
+                        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                        <span x-text="copied ? 'Copiato!' : 'Copia testo email'"></span>
+                      </button>
+                      <button class="btn-ghost" @click="App.openQuoteMail()">
+                        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+                        Apri in email
+                      </button>
+                      <button class="btn-ghost" @click="App.downloadQuotePdf()">
+                        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                        Scarica PDF
+                      </button>
+                    </div>
+                    <p class="mt-2 text-xs text-slate-400">Mittente, IVA e validità si configurano in Impostazioni.</p>
+                  </div>
+                </template>
+              </div>
+            </section>
+
+            <!-- ════════════════════════════════════════════════════════════ -->
+            <!-- FASE 3 — Onboarding Cataloghi (HITL)                          -->
+            <!-- ════════════════════════════════════════════════════════════ -->
+            <section x-show="view === 'ingest'" class="flex flex-col gap-6">
+              <!-- IDLE: dropzone -->
+              <div x-show="$store.ingest.phase === 'idle'" class="card">
+                <h2 class="font-semibold text-slate-800">Onboarding catalogo</h2>
+                <p class="text-sm text-slate-500 mt-1">
+                  Carica un file catalogo. Verrà analizzato e normalizzato dall'AI;
+                  gli item incerti passeranno alla tua revisione prima della scrittura.
+                </p>
+
+                <div
+                  class="dropzone mt-4"
+                  x-init="App.initDropzone($el)"
+                  @click="$refs.fileInput.click()"
+                >
+                  <svg class="w-10 h-10 mx-auto mb-3 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                  <p class="font-medium text-slate-700">Trascina qui il file o clicca per selezionarlo</p>
+                  <p class="text-xs mt-1">Formati: CSV, JSON, XLSX — max 10 MB</p>
+                </div>
+                <input
+                  type="file"
+                  x-ref="fileInput"
+                  class="hidden"
+                  accept=".csv,.json,.xlsx"
+                  @change="App.onFilePicked($event)"
+                />
+                <p class="text-xs text-slate-400 mt-3">
+                  Tenant attivo:
+                  <span class="font-mono text-slate-600" x-text="$store.connection.tenantId"></span>
+                </p>
+              </div>
+
+              <!-- UPLOADING / PROCESSING -->
+              <div
+                x-show="$store.ingest.phase === 'uploading' || $store.ingest.phase === 'processing'"
+                class="flex flex-col gap-6"
+              >
+                <div class="card flex items-center gap-3">
+                  <svg class="spinner w-6 h-6 text-indigo-600 shrink-0" viewBox="0 0 24 24" fill="none">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                    <path class="opacity-75" d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" stroke-linecap="round" />
+                  </svg>
+                  <div class="min-w-0">
+                    <p
+                      class="font-medium text-slate-800"
+                      x-text="$store.ingest.phase === 'uploading' ? 'Upload del file in corso…' : 'Analisi e normalizzazione del catalogo tramite AI in corso…'"
+                    ></p>
+                    <p
+                      class="text-xs text-slate-500 truncate"
+                      x-show="$store.ingest.fileName"
+                      x-text="$store.ingest.fileName + ' • ' + ui.formatBytes($store.ingest.fileSize)"
+                    ></p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- REVIEW (HITL) -->
+              <div x-show="$store.ingest.phase === 'review'" class="flex flex-col gap-6">
+                <div class="card !border-amber-200 !bg-amber-50">
+                  <div class="flex items-center gap-2">
+                    <svg class="w-5 h-5 text-amber-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                    <h2 class="font-semibold text-amber-800">Revisione necessaria</h2>
+                  </div>
+                  <p class="text-sm text-amber-700 mt-1">
+                    Alcuni item richiedono la tua approvazione prima di scrivere nel catalogo.
+                  </p>
+                  <div class="flex flex-wrap gap-4 mt-3 text-sm">
+                    <span class="text-slate-600">Item totali: <b x-text="$store.ingest.reviewPayload?.total_items ?? 0"></b></span>
+                    <span class="text-slate-600">Flaggati: <b class="text-rose-600" x-text="$store.ingest.reviewPayload?.flagged_count ?? 0"></b></span>
+                    <span class="text-slate-600">Confidenza media: <b x-text="Number($store.ingest.reviewPayload?.confidence_score ?? 0).toFixed(2)"></b></span>
+                  </div>
+                </div>
+
+                <!-- Item flaggati -->
+                <div class="flex flex-col gap-3">
+                  <template
+                    x-for="(item, i) in ($store.ingest.reviewPayload?.flagged_items || [])"
+                    :key="item.id || i"
+                  >
+                    <div class="card !bg-rose-50 !border-rose-200">
+                      <div class="flex items-start justify-between gap-3">
+                        <p class="font-semibold text-slate-800" x-text="item.name"></p>
+                        <p class="font-semibold text-slate-800 whitespace-nowrap" x-text="ui.formatMoney(item.price) + ' ' + (item.currency || 'EUR')"></p>
+                      </div>
+                      <span class="badge bg-rose-100 text-rose-700 mt-2" x-text="item.flag_reason || 'flagged'"></span>
+                      <details class="mt-3">
+                        <summary class="text-xs text-slate-500 cursor-pointer select-none">Dati grezzi (tracciabilità)</summary>
+                        <pre class="text-xs bg-white border border-slate-200 rounded-lg p-2 mt-2 overflow-x-auto font-mono text-slate-600" x-text="JSON.stringify(item.raw_data, null, 2)"></pre>
+                      </details>
+                    </div>
+                  </template>
+                  <template x-if="(($store.ingest.reviewPayload?.flagged_items) || []).length === 0">
+                    <div class="card text-sm text-slate-500">
+                      Nessun item singolo flaggato — la revisione è richiesta per bassa confidenza media del batch.
+                    </div>
+                  </template>
+                </div>
+
+                <!-- Errori di validazione -->
+                <template x-if="(($store.ingest.reviewPayload?.validation_errors) || []).length">
+                  <div class="card">
+                    <h3 class="text-sm font-semibold text-slate-700 mb-2">Errori di validazione</h3>
+                    <ul class="list-disc list-inside space-y-1">
+                      <template x-for="(err, i) in $store.ingest.reviewPayload.validation_errors" :key="i">
+                        <li class="text-sm text-slate-600" x-text="err"></li>
+                      </template>
+                    </ul>
+                  </div>
+                </template>
+
+                <!-- Footer azioni sticky -->
+                <div class="sticky bottom-0 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 py-4 bg-white/95 backdrop-blur border-t border-slate-200">
+                  <textarea
+                    class="input-text h-20 resize-none mb-3"
+                    placeholder="Feedback opzionale per la correzione (usato dal re-processing)…"
+                    x-model="$store.ingest.feedback"
+                  ></textarea>
+                  <div class="flex flex-wrap gap-3">
+                    <button class="btn-success" @click="App.approve()">
+                      <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                      Approva e scrivi
+                    </button>
+                    <button class="btn-danger" @click="App.reject()">
+                      <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                      Rifiuta
+                    </button>
+                    <button
+                      class="btn-ghost"
+                      :disabled="!$store.ingest.feedback.trim()"
+                      @click="App.retryWithFeedback()"
+                    >
+                      <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
+                      Correggi e riprocessa
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- DONE -->
+              <div x-show="$store.ingest.phase === 'done'" class="card">
+                <div class="flex items-center gap-2">
+                  <svg
+                    class="w-6 h-6"
+                    :class="$store.ingest.result?.status === 'rejected' ? 'text-rose-500' : 'text-emerald-500'"
+                    viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                  ><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg>
+                  <h2
+                    class="font-semibold text-slate-800"
+                    x-text="$store.ingest.result?.status === 'rejected' ? 'Ingestion rifiutata' : 'Ingestion completata'"
+                  ></h2>
+                </div>
+                <div class="flex flex-wrap gap-4 mt-3 text-sm">
+                  <span class="text-slate-600">Item totali: <b x-text="$store.ingest.result?.total_items ?? 0"></b></span>
+                  <span class="text-slate-600">Flaggati: <b x-text="$store.ingest.result?.flagged_count ?? 0"></b></span>
+                </div>
+                <template x-if="(($store.ingest.result?.validation_errors) || []).length">
+                  <div class="mt-3">
+                    <h3 class="text-sm font-semibold text-slate-700 mb-1">Errori di validazione</h3>
+                    <ul class="list-disc list-inside space-y-1">
+                      <template x-for="(err, i) in $store.ingest.result.validation_errors" :key="i">
+                        <li class="text-sm text-slate-600" x-text="err"></li>
+                      </template>
+                    </ul>
+                  </div>
+                </template>
+                <button class="btn-primary mt-5" @click="App.resetIngest()">Nuovo onboarding</button>
+              </div>
+
+              <!-- ERROR -->
+              <div x-show="$store.ingest.phase === 'error'" class="card !border-rose-200 !bg-rose-50">
+                <h2 class="font-semibold text-rose-700">Si è verificato un errore</h2>
+                <p class="text-sm text-rose-700 mt-1" x-text="$store.ingest.error"></p>
+                <button class="btn-ghost mt-4" @click="App.resetIngest()">Ricomincia</button>
+              </div>
+
+              <!-- Console SSE condivisa (visibile quando ci sono log) -->
+              <div class="card !p-0 overflow-hidden" x-show="$store.ingest.logs.length > 0">
+                <div class="flex items-center gap-2 px-4 py-2.5 border-b border-slate-200 bg-slate-50">
+                  <span class="w-2.5 h-2.5 rounded-full bg-rose-400"></span>
+                  <span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+                  <span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+                  <span class="ml-2 text-xs font-medium text-slate-500">Log ingestion (SSE)</span>
+                </div>
+                <div
+                  class="terminal h-56 !rounded-none"
+                  x-ref="iterm"
+                  x-effect="$store.ingest.logs.length; ui.autoscroll($refs.iterm)"
+                >
+                  <template x-for="(line, i) in $store.ingest.logs" :key="i">
+                    <div
+                      class="whitespace-pre-wrap leading-relaxed"
+                      :class="ui.logLineClass(line)"
+                      x-text="line"
+                    ></div>
+                  </template>
+                </div>
+              </div>
+            </section>
+
+            <!-- ════════════════════════════════════════════════════════════ -->
+            <!-- Impostazioni                                                  -->
+            <!-- ════════════════════════════════════════════════════════════ -->
+            <section x-show="view === 'settings'" class="flex flex-col gap-6 max-w-2xl">
+              <div class="card">
+                <h2 class="font-semibold text-slate-800 mb-3">Stato sistema</h2>
+                <dl class="space-y-2 text-sm">
+                  <div class="flex justify-between gap-4">
+                    <dt class="text-slate-500">API base URL</dt>
+                    <dd class="font-mono text-slate-700 truncate" x-text="(window.APP_CONFIG?.apiBaseUrl || '(same-origin)')"></dd>
+                  </div>
+                  <div class="flex justify-between gap-4">
+                    <dt class="text-slate-500">Stato connessione</dt>
+                    <dd>
+                      <span
+                        class="badge"
+                        :class="$store.connection.apiConnected ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'"
+                      >
+                        <span class="w-2 h-2 rounded-full" :class="$store.connection.apiConnected ? 'bg-emerald-500' : 'bg-rose-500'"></span>
+                        <span x-text="$store.connection.apiConnected ? 'Connesso' : 'Offline'"></span>
+                      </span>
+                    </dd>
+                  </div>
+                  <div class="flex justify-between gap-4">
+                    <dt class="text-slate-500">Tenant attivo</dt>
+                    <dd class="font-mono text-slate-700" x-text="$store.connection.tenantId"></dd>
+                  </div>
+                </dl>
+              </div>
+
+              <div class="card">
+                <h2 class="font-semibold text-slate-800">Tenant noti</h2>
+                <p class="text-sm text-slate-500 mt-1">
+                  Aggiungi un nuovo tenant per onboardarlo direttamente dalla UI: il
+                  primo catalogo caricato creerà la collezione
+                  <span class="font-mono">catalogue_&lt;tenant&gt;</span>.
+                </p>
+                <div class="flex items-center gap-2 mt-3">
+                  <input
+                    type="text"
+                    class="input-text flex-1"
+                    placeholder="ID nuovo tenant (A–Z, 0–9, _ -)"
+                    x-model="$store.connection.newTenant"
+                    @keydown.enter.prevent="$store.connection.addTenant($store.connection.newTenant)"
+                  />
+                  <button class="btn-primary" @click="$store.connection.addTenant($store.connection.newTenant)">Aggiungi</button>
+                </div>
+                <ul class="mt-4 divide-y divide-slate-100">
+                  <template x-for="t in $store.connection.tenants" :key="t">
+                    <li class="flex items-center justify-between py-2.5">
+                      <span class="font-mono text-sm text-slate-700" x-text="t"></span>
+                      <button
+                        class="text-sm"
+                        :class="$store.connection.tenantId === t ? 'text-emerald-600 font-semibold' : 'text-indigo-600 hover:underline'"
+                        @click="$store.connection.tenantId = t"
+                        x-text="$store.connection.tenantId === t ? 'Attivo' : 'Seleziona'"
+                      ></button>
+                    </li>
+                  </template>
+                </ul>
+              </div>
+
+              <div class="card">
+                <div class="flex items-center justify-between gap-3">
+                  <h2 class="font-semibold text-slate-800">Profilo azienda (per tenant)</h2>
+                  <span class="text-xs text-slate-400">Tenant: <span class="font-mono text-slate-600" x-text="$store.connection.tenantId"></span></span>
+                </div>
+                <p class="text-sm text-slate-500 mt-1">
+                  Dati del mittente usati nel preventivo (email e PDF). Salvati sul server, per questo tenant.
+                </p>
+
+                <!-- Logo -->
+                <div class="mt-4 flex items-center gap-4">
+                  <div class="w-24 h-24 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-center overflow-hidden shrink-0">
+                    <template x-if="$store.settings.logoDataUrl">
+                      <img :src="$store.settings.logoDataUrl" alt="logo" class="max-w-full max-h-full object-contain" />
+                    </template>
+                    <template x-if="!$store.settings.logoDataUrl">
+                      <span class="text-xs text-slate-400">No logo</span>
+                    </template>
+                  </div>
+                  <div class="flex flex-col gap-2">
+                    <input type="file" x-ref="logoInput" class="hidden" accept="image/*" @change="App.onLogoPicked($event)" />
+                    <button class="btn-ghost !py-1.5 text-sm" @click="$refs.logoInput.click()">Carica logo</button>
+                    <button class="text-xs text-rose-600 hover:underline text-left" x-show="$store.settings.logoDataUrl" @click="App.removeLogo()">Rimuovi logo</button>
+                  </div>
+                </div>
+
+                <!-- Campi profilo -->
+                <div class="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <label class="block">
+                    <span class="text-sm text-slate-600">Nome azienda</span>
+                    <input type="text" class="input-text mt-1" x-model="$store.settings.companyName" />
+                  </label>
+                  <label class="block">
+                    <span class="text-sm text-slate-600">Mittente / firma</span>
+                    <input type="text" class="input-text mt-1" x-model="$store.settings.senderName" />
+                  </label>
+                  <label class="block">
+                    <span class="text-sm text-slate-600">P.IVA</span>
+                    <input type="text" class="input-text mt-1" x-model="$store.settings.vatNumber" />
+                  </label>
+                  <label class="block">
+                    <span class="text-sm text-slate-600">Codice Fiscale</span>
+                    <input type="text" class="input-text mt-1" x-model="$store.settings.taxCode" />
+                  </label>
+                  <label class="block sm:col-span-2">
+                    <span class="text-sm text-slate-600">Sede legale</span>
+                    <textarea class="input-text mt-1 h-16 resize-none" x-model="$store.settings.address"></textarea>
+                  </label>
+                  <label class="block">
+                    <span class="text-sm text-slate-600">IBAN</span>
+                    <input type="text" class="input-text mt-1" x-model="$store.settings.iban" />
+                  </label>
+                  <label class="block">
+                    <span class="text-sm text-slate-600">Condizioni di pagamento</span>
+                    <input type="text" class="input-text mt-1" placeholder="es. Bonifico 30 gg d.f." x-model="$store.settings.paymentTerms" />
+                  </label>
+                  <label class="block sm:col-span-2">
+                    <span class="text-sm text-slate-600">Note / termini</span>
+                    <textarea class="input-text mt-1 h-16 resize-none" x-model="$store.settings.notes"></textarea>
+                  </label>
+                  <label class="block">
+                    <span class="text-sm text-slate-600">Aliquota IVA (%)</span>
+                    <input
+                      type="number" min="0" step="1" class="input-text mt-1"
+                      :value="Math.round($store.settings.vatRate * 100)"
+                      :disabled="!$store.settings.vatEnabled"
+                      @input="$store.settings.vatRate = (parseFloat($event.target.value) || 0) / 100"
+                    />
+                  </label>
+                  <label class="block">
+                    <span class="text-sm text-slate-600">Validità offerta (giorni)</span>
+                    <input type="number" min="1" step="1" class="input-text mt-1" x-model.number="$store.settings.validityDays" />
+                  </label>
+                </div>
+
+                <label class="mt-4 flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" x-model="$store.settings.vatEnabled" class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+                  <span class="text-sm text-slate-600">Includi IVA nel preventivo</span>
+                </label>
+
+                <!-- Azioni -->
+                <div class="mt-5 flex flex-wrap items-center gap-3">
+                  <button class="btn-primary" :disabled="$store.settings.saving" @click="App.saveProfile()">
+                    <svg x-show="$store.settings.saving" class="spinner w-4 h-4" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" /><path class="opacity-75" d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" stroke-linecap="round" /></svg>
+                    <span x-text="$store.settings.saving ? 'Salvataggio…' : 'Salva profilo'"></span>
+                  </button>
+                  <span class="text-sm text-emerald-600" x-show="$store.settings.savedAt && !$store.settings.saving" x-transition>Salvato</span>
+                  <span class="text-sm text-slate-400" x-show="$store.settings.loading">Caricamento profilo…</span>
+                  <span class="text-sm text-rose-600" x-show="$store.settings.error" x-text="$store.settings.error"></span>
+                </div>
+              </div>
+
+              <div class="card">
+                <h2 class="font-semibold text-slate-800">Coerenza air-gapped</h2>
+                <p class="text-sm text-slate-500 mt-1">
+                  Tutti gli asset (JS, CSS, font Inter / JetBrains Mono, icone SVG)
+                  sono impacchettati localmente da Vite: nessuna dipendenza da CDN
+                  esterni a runtime, coerente col principio air-gapped del backend.
+                </p>
+              </div>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <script type="module" src="/src/app.js"></script>
+  </body>
+</html>

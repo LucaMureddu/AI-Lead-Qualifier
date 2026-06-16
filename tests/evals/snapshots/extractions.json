@@ -1,0 +1,38 @@
+{
+  "_comment": "Generato da tests/evals/capture_snapshots.py — NON modificare a mano.",
+  "_generated": true,
+  "generated_at": "2026-06-16T19:22:15.961339+00:00",
+  "model": "qwen-coder",
+  "extractions": [
+    {
+      "id": "L01",
+      "output": [
+        "Web Development"
+      ]
+    },
+    {
+      "id": "L02",
+      "output": [
+        "Online Store Setup"
+      ]
+    },
+    {
+      "id": "L03",
+      "output": [
+        "Sito Web Vetrina",
+        "Configurazione Server Email Aziendale",
+        "Consulenza SEO Mensile"
+      ]
+    },
+    {
+      "id": "L04",
+      "output": [
+        "Cybersecurity Audit"
+      ]
+    },
+    {
+      "id": "L05",
+      "output": []
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+# pyproject.toml
+# ---------------------------------------------------------------------------
+# Configurazione di pytest e coverage per AI Lead Qualifier.
+# Vedi TESTING_PLAN.md §2.2.
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"           # i test async non richiedono @pytest.mark.asyncio
+testpaths = ["tests"]
+# Gli eval LIVE (modello reale) sono esclusi di default con -m "not eval".
+# --strict-markers fa fallire l'uso di marker non registrati qui sotto.
+addopts = "-ra -q --strict-markers -m 'not eval'"
+markers = [
+    "unit: test puri e veloci, nessuna I/O",
+    "integration: grafo/API con LLM e ChromaDB mockati",
+    "eval_ci: evals model-free (deterministico + coseno) su generazioni registrate — girano in CI",
+    "eval: evals LIVE col modello reale + giudice LLM — solo in locale, esclusi di default",
+]
+filterwarnings = [
+    # ChromaDB usa asyncio.iscoroutinefunction (deprecata in 3.12+): è rumore di una
+    # libreria terza, non un bug nostro. Filtro mirato (non globale).
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["agents", "core", "ingestion", "adapters", "api"]
+omit = ["tests/*", "frontend/*", ".venv/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", "frontend"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true   # niente stub per chromadb/langgraph/groq/llama-cpp
+

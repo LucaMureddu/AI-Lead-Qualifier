@@ -1,0 +1,40 @@
+# requirements-ci.txt
+# ---------------------------------------------------------------------------
+# Dipendenze per i runner GitHub Actions. È un MIRROR di requirements.txt SENZA
+# i backend LLM opzionali:
+#   - llama-cpp-python  → richiede compilazione C++ sui runner (lenta/fragile);
+#   - groq              → SDK cloud non necessario.
+# Entrambi sono import LAZY e nei test l'LLM è SEMPRE mockato, quindi non servono.
+#
+# Aggiunge esplicitamente:
+#   - langgraph-checkpoint-sqlite → usato da core/graph.py
+#     (AsyncSqliteSaver) ma NON dichiarato in requirements.txt: senza, l'import
+#     fallisce su un'installazione pulita. ⚠️ Conviene aggiungerlo anche a
+#     requirements.txt.
+#   - i tool di test e lint (pytest&co, ruff, mypy).
+# ---------------------------------------------------------------------------
+
+# ── Runtime ────────────────────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+langgraph>=0.2.0
+langgraph-checkpoint-sqlite>=2.0.0
+langchain-core>=0.2.0
+chromadb>=0.5.0
+httpx>=0.27.0
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+aiosqlite>=0.20.0
+
+# ── Test ───────────────────────────────────────────────────────────────────
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+pytest-mock>=3.14.0
+pytest-cov>=5.0.0
+respx>=0.21.0
+anyio>=4.0.0
+
+# ── Lint / type-check ──────────────────────────────────────────────────────
+ruff>=0.4.0
+mypy>=1.10.0

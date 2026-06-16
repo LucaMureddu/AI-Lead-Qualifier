@@ -1,0 +1,89 @@
+"""
+tests/conftest.py
+-----------------
+Fixture condivise per l'intera suite (vedi TESTING_PLAN.md §2.3).
+
+Obiettivo: isolare ogni test da servizi esterni e dallo stato globale.
+- get_settings() è cachata con @lru_cache → va svuotata fra i test.
+- Il checkpointer LangGraph gira su SQLite ``:memory:`` (niente file su disco).
+- ``make_lead_state`` costruisce un LeadState valido (con tenant_id!).
+- ``api_client`` parla con l'app via httpx.ASGITransport (no rete, no porta).
+
+LLM e ChromaDB NON vengono mai contattati: i singoli test mockano i confini
+esterni (es. ``agents.extractor._call_openai_compatible`` o
+``core.graph.mapper_node``).
+"""
+
+from __future__ import annotations
+
+from typing import Callable
+
+import aiosqlite
+import pytest
+from httpx import ASGITransport, AsyncClient
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+from core.config import get_settings
+from core.state import LeadInfo, LeadState
+
+
+@pytest.fixture(autouse=True)
+def _reset_settings_cache(monkeypatch, tmp_path):
+    """
+    Isola le Settings per ogni test:
+    - cache di get_settings() pulita prima e dopo il test;
+    - DB SQLite su file temporaneo (mai il path di produzione);
+    - provider LLM forzato a 'openai' (rotta httpx → mockabile con respx).
+    """
+    monkeypatch.setenv("SQLITE_DB_PATH", str(tmp_path / "checkpoints.db"))
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    # Isola anche upload e profili su tmp: i test API non devono scrivere nel repo.
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setenv("PROFILES_DIR", str(tmp_path / "profiles"))
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+async def checkpointer():
+    """AsyncSqliteSaver in-memory: supporta interrupt/resume, zero I/O su disco."""
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        yield AsyncSqliteSaver(conn)
+    finally:
+        await conn.close()
+
+
+@pytest.fixture
+def make_lead_state() -> Callable[..., LeadState]:
+    """Factory di LeadState valido (con tenant_id!). Override via kwargs."""
+
+    def _make(raw_text: str = "Serve un sito web e un server email.", **ovr) -> LeadState:
+        base: LeadState = {
+            "lead_info": LeadInfo(id="lead-001", raw_text=raw_text, tenant_id="acme"),
+            "sanitized_text": "",
+            "extracted_services": [],
+            "mapped_services": [],
+            "total_quote": 0.0,
+            "retry_count": 0,
+            "sse_logs": [],
+            "error": None,
+            "delivery_status": "PENDING",
+            "delivery_attempts": 0,
+            "delivery_error": None,
+        }
+        base.update(ovr)  # type: ignore[typeddict-item]
+        return base
+
+    return _make
+
+
+@pytest.fixture
+async def api_client():
+    """Client async che parla con l'app FastAPI senza avviare un server reale."""
+    from main import create_app
+
+    transport = ASGITransport(app=create_app())
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c

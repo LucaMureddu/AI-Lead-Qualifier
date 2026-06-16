@@ -1,0 +1,5 @@
+{"id": "L01", "raw_text": "Salve, vorremmo realizzare un nuovo sito web aziendale moderno e responsive.", "expect_keywords": ["web", "sito", "website", "design"], "min_services": 1, "expect_human_fallback": false}
+{"id": "L02", "raw_text": "Vogliamo aprire un negozio online per vendere le nostre scarpe artigianali in tutta Europa.", "expect_keywords": ["commerc", "ecommerce", "e-commerce", "store", "shop", "negozio", "online"], "min_services": 1, "expect_human_fallback": false}
+{"id": "L03", "raw_text": "Ci serve un sito web vetrina, la configurazione di un server email aziendale e una consulenza SEO mensile.", "expect_keywords": ["seo"], "min_services": 2, "expect_human_fallback": false}
+{"id": "L04", "raw_text": "Sono Mario Rossi (mario.rossi@example.com, +39 06 1234567, CF RSSMRA85T10A562S): vorremmo un audit di sicurezza informatica della nostra rete.", "expect_keywords": ["sicur", "security", "cyber", "audit"], "min_services": 1, "expect_human_fallback": false}
+{"id": "L05", "raw_text": "asdkjh qwe lorem ipsum zxcvbnm 123 foo bar baz qux", "expect_services": 0, "expect_human_fallback": true}

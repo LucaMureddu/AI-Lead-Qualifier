@@ -1,0 +1,38 @@
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+
+# ── Runtime data ──────────────────────────────────────────────────────────────
+uploads/
+data/checkpoints.db*
+chroma_data/
+
+# ── OS / editor ───────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+
+# ── Coverage ──────────────────────────────────────────────────────────────────
+.coverage
+.coverage.*
+htmlcov/
+
+# ── Runtime data (aggiunte) ───────────────────────────────────────────────────
+chroma/                 # secondo store ChromaDB in root (oltre a chroma_data/)
+data/profiles/          # profili tenant generati a runtime
+
+# ── Node / frontend build ─────────────────────────────────────────────────────
+node_modules/
+dist/
+
+# NB: NON ignorare i dataset/snapshot degli evals (tests/evals/datasets, snapshots)
+# né i CSV di esempio in root: vanno versionati.
