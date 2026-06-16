@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import pytest
 import httpx
-import pytest_asyncio
 
 from adapters.webhook import WebhookAdapter
 

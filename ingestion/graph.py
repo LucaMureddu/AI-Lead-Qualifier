@@ -321,7 +321,6 @@ async def normalizer_node(state: IngestionState) -> Dict:
     """
     from agents.extractor import _call_openai_compatible  # noqa: PLC0415 (local import to avoid circularity)
 
-    settings = get_settings()
     tenant_id: str = state["tenant_id"]
     chunks: List[List[Dict]] = state["raw_chunks"]
     idx: int = state["current_chunk_index"]
