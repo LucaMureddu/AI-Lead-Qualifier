@@ -23,6 +23,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+from api.security import create_access_token
 from core.config import get_settings
 from core.state import LeadInfo, LeadState
 
@@ -80,10 +81,27 @@ def make_lead_state() -> Callable[..., LeadState]:
 
 
 @pytest.fixture
-async def api_client():
-    """Client async che parla con l'app FastAPI senza avviare un server reale."""
+def auth_headers() -> dict[str, str]:
+    """Header Authorization con un token JWT di test valido per tenant 'acme'."""
+    token = create_access_token(tenant_id="acme", expires_delta_seconds=3600)
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+async def api_client(auth_headers):
+    """
+    Client async che parla con l'app FastAPI senza avviare un server reale.
+
+    Tutti i test di integrazione che usano questo client ricevono automaticamente
+    l'header ``Authorization: Bearer <token>`` pre-configurato per il tenant 'acme'.
+    Gli endpoint che non richiedono auth (``/health``, ``/token``) ignorano l'header.
+    """
     from main import create_app
 
     transport = ASGITransport(app=create_app())
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers=auth_headers,
+    ) as c:
         yield c

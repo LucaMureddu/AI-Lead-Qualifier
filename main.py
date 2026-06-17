@@ -27,6 +27,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import (
+    auth_router,
     ingest_router,
     profile_router,
     router as qualify_router,
@@ -73,6 +74,7 @@ def create_app() -> FastAPI:
     )
 
     # Routers
+    app.include_router(auth_router)
     app.include_router(qualify_router)
     app.include_router(ingest_router)
     app.include_router(upload_router)

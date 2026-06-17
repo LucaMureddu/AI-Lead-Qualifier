@@ -136,8 +136,6 @@ async def main() -> None:
                 "query": row["query"],
                 "matched_name": best.get("matched_name", ""),
                 "distance": best.get("distance"),
-                "expect_match_contains": row["expect_match_contains"],
-                "max_distance": row["max_distance"],
             })
         map_payload = {
             "_comment": "Generato da tests/evals/capture_snapshots.py — NON modificare a mano.",

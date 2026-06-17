@@ -196,10 +196,11 @@ async def mapper_node(state: LeadState) -> Dict:
         logger.exception(error_msg)
         return {"mapped_services": [], "sse_logs": [f"[ERROR] {error_msg}"], "error": error_msg}
 
+    threshold: float = settings.mapper_max_distance
     mapped: List[Dict] = []
     for idx, service_name in enumerate(extracted):
         match = _extract_best_match(result, idx)
-        if match:
+        if match and (threshold <= 0.0 or match["distance"] <= threshold):
             mapped.append(match)
             logger.debug(
                 "[mapper] '%s' → '%s' @ %.2f%s (dist=%.4f)",
@@ -208,6 +209,16 @@ async def mapper_node(state: LeadState) -> Dict:
                 match["price"],
                 match["unit"],
                 match["distance"],
+            )
+        elif match:
+            # Match presente ma OLTRE la soglia di distanza → scartato (off-target).
+            # Lasciando mapped_services più povero/vuoto, il router instrada a
+            # retry e poi a human_fallback invece di proporre un match irrilevante.
+            logger.info(
+                "[mapper] '%s' scartato: distanza %.4f > soglia %.2f (off-target)",
+                service_name,
+                match["distance"],
+                threshold,
             )
         else:
             logger.warning("[mapper] No match found for service '%s'", service_name)

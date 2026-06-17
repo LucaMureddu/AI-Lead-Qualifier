@@ -24,6 +24,7 @@ import "@fontsource/jetbrains-mono/500.css";
 import * as api from "./api.js";
 import * as ui from "./ui.js";
 import * as quote from "./quote.js";
+import auth from "./stores/auth.js";
 import connection from "./stores/connection.js";
 import qualify from "./stores/qualify.js";
 import ingest from "./stores/ingest.js";
@@ -48,6 +49,42 @@ const safeParse = (s) => {
 
 // ── Azioni orchestrate (esposte come window.App per il markup x-on) ─────────────
 const App = {
+  // ── Auth ─────────────────────────────────────────────────────────────────────
+
+  /**
+   * POST /token con lo username; salva il JWT e sblocca l'interfaccia.
+   * Lo username diventa il tenant_id (claim "sub") per tutta la sessione.
+   */
+  async login(username) {
+    const a = store("auth");
+    if (!username || !username.trim()) return;
+    a.isLoggingIn = true;
+    a.loginError = null;
+    try {
+      const token = await api.login(username.trim());
+      a.setToken(token);
+      // Sincronizza il connection store così il profilo e i display legacy
+      // che leggono $store.connection.tenantId continuano a funzionare.
+      const conn = store("connection");
+      conn.tenantId = a.tenantId;
+      conn.tenants = [a.tenantId];
+    } catch (e) {
+      a.loginError = e.message;
+    } finally {
+      a.isLoggingIn = false;
+    }
+  },
+
+  /**
+   * Logout: svuota il token e resetta gli store di lavoro.
+   * Chiamato dal bottone Logout e dall'handler dell'evento "auth:unauthorized".
+   */
+  logout() {
+    store("auth").clear();
+    store("qualify").reset?.();
+    store("ingest").reset?.();
+  },
+
   // ── FASE 1: connessione ──────────────────────────────────────────────────────
   startHealthPolling() {
     const tick = async () => {
@@ -70,7 +107,7 @@ const App = {
     s.reset();
     try {
       await api.qualifyStream(
-        { tenant_id: conn.tenantId, raw_text: text },
+        { raw_text: text },
         {
           onEvent: (f) => {
             if (f.event === "log") {
@@ -156,12 +193,12 @@ const App = {
 
   /** Salva il profilo corrente sul backend per il tenant attivo. */
   async saveProfile() {
-    const conn = store("connection");
+    const tenantId = store("auth").tenantId || store("connection").tenantId;
     const st = store("settings");
     st.saving = true;
     st.error = null;
     try {
-      const saved = await api.saveTenantProfile(conn.tenantId, st.toPayload());
+      const saved = await api.saveTenantProfile(tenantId, st.toPayload());
       st.applyProfile(saved);
       st.savedAt = Date.now();
     } catch (e) {
@@ -257,14 +294,10 @@ const App = {
     s.reviewPayload = null;
     s.result = null;
     try {
-      const { file_path, file_format } = await api.uploadCatalogue(file, conn.tenantId);
+      const { file_path, file_format } = await api.uploadCatalogue(file);
       s.filePath = file_path;
       s.fileFormat = file_format;
-      await App.startIngestion({
-        tenant_id: conn.tenantId,
-        file_path,
-        file_format,
-      });
+      await App.startIngestion({ file_path, file_format });
     } catch (e) {
       s.error = e.message;
       s.phase = "error";
@@ -385,7 +418,6 @@ const App = {
     const feedbackToSend = fb;
     s.feedback = "";
     await App.startIngestion({
-      tenant_id: conn.tenantId,
       file_path: s.filePath,
       file_format: s.fileFormat,
       review_feedback: feedbackToSend,
@@ -398,6 +430,7 @@ const App = {
 };
 
 // ── Registrazione store ─────────────────────────────────────────────────────────
+Alpine.store("auth", auth);
 Alpine.store("connection", connection);
 Alpine.store("qualify", qualify);
 Alpine.store("ingest", ingest);
@@ -418,8 +451,14 @@ window.APP_CONFIG = {
 Alpine.start();
 App.startHealthPolling();
 
-// Carica il profilo del tenant attivo e lo ricarica a ogni cambio tenant.
+// Carica il profilo del tenant autenticato e lo ricarica se cambia sessione.
 Alpine.effect(() => {
-  const tenantId = Alpine.store("connection").tenantId;
+  const tenantId = Alpine.store("auth").tenantId;
   if (tenantId) App.loadProfile(tenantId);
+});
+
+// Listener globale per il logout forzato da 401: resetta la sessione
+// e riporta l'utente alla login screen senza bisogno di refresh pagina.
+window.addEventListener("auth:unauthorized", () => {
+  App.logout();
 });

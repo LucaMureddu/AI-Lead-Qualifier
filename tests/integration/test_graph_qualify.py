@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from core.config import get_settings
 from core.graph import build_graph
 
 pytestmark = pytest.mark.integration
@@ -74,3 +75,28 @@ class TestQualifyGraph:
         assert final["delivery_status"] == "SUCCESS"
         assert final["delivery_attempts"] == 2
         assert deliver.await_count == 2
+
+    async def test_offtarget_distance_routes_to_human_fallback(
+        self, make_lead_state, checkpointer, monkeypatch
+    ) -> None:
+        # Con la soglia 0.5 attiva, un match a distanza alta (off-target) viene
+        # scartato dal mapper → mapped_services vuoto → retry → human_fallback.
+        # NB: il mapper REALE gira (non lo mockiamo); mockiamo solo ChromaDB.
+        monkeypatch.setenv("MAPPER_MAX_DISTANCE", "0.5")
+        get_settings.cache_clear()
+        far_result = {
+            "ids": [["svc-x"]],
+            "documents": [["Servizio X"]],
+            "metadatas": [[{"service_name": "Servizio X", "price": 100.0, "unit": "€"}]],
+            "distances": [[0.95]],  # off-target: oltre 0.5
+        }
+        with patch("agents.extractor._call_openai_compatible",
+                   new=AsyncMock(return_value='["celle frigorifere"]')), \
+             patch("agents.mapper._query_chroma_sync", return_value=far_result):
+            graph = build_graph(checkpointer=checkpointer)
+            config = {"configurable": {"thread_id": "q-offtarget"}}
+            final = await graph.ainvoke(make_lead_state(), config=config)
+            snapshot = await graph.aget_state(config)
+
+        assert final.get("mapped_services") == []                 # nessun match accettato
+        assert "__interrupt__" in final or bool(snapshot.next)     # sospeso ad human_fallback

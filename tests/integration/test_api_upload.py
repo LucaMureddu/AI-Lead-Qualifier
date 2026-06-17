@@ -19,7 +19,6 @@ async def test_rejects_bad_extension(api_client) -> None:
     r = await api_client.post(
         "/upload",
         files={"file": ("catalog.txt", b"some,data", "text/plain")},
-        data={"tenant_id": "acme"},
     )
     assert r.status_code == 400
 
@@ -28,7 +27,6 @@ async def test_rejects_empty_file(api_client) -> None:
     r = await api_client.post(
         "/upload",
         files={"file": ("catalog.csv", b"", "text/csv")},
-        data={"tenant_id": "acme"},
     )
     assert r.status_code == 400
 
@@ -39,19 +37,18 @@ async def test_rejects_too_large(api_client, monkeypatch) -> None:
     r = await api_client.post(
         "/upload",
         files={"file": ("catalog.csv", b"x" * 50, "text/csv")},
-        data={"tenant_id": "acme"},
     )
     assert r.status_code == 413
 
 
-async def test_success_sanitizes_tenant_id(api_client) -> None:
+async def test_success_sanitizes_tenant_id(api_client, auth_headers) -> None:
+    """Il tenant_id viene dal JWT (claim 'sub' = 'acme') — non dal form."""
     r = await api_client.post(
         "/upload",
         files={"file": ("catalog.csv", b"name,price\nA,1\n", "text/csv")},
-        data={"tenant_id": "../evil"},
     )
     assert r.status_code == 200
     body = r.json()
     assert body["file_format"] == "csv"
-    assert "evil" in body["file_path"]
-    assert ".." not in body["file_path"]  # niente path traversal
+    # Il percorso deve contenere il tenant ricavato dal JWT ("acme")
+    assert "acme" in body["file_path"]

@@ -41,12 +41,13 @@ import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Literal, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+from api.security import create_access_token, get_current_tenant_id
 from core.config import get_settings
 from core.graph import AsyncSqliteSaver, build_graph, get_checkpointer
 from core.state import LeadInfo, LeadState
@@ -58,6 +59,7 @@ logger: logging.Logger = logging.getLogger(__name__)
 router: APIRouter = APIRouter(prefix="/qualify", tags=["lead-qualification"])
 ingest_router: APIRouter = APIRouter(prefix="/ingest", tags=["catalogue-ingestion"])
 upload_router: APIRouter = APIRouter(tags=["catalogue-upload"])
+auth_router: APIRouter = APIRouter(tags=["auth"])
 
 
 # ── Request / Response schemas ────────────────────────────────────────────────
@@ -65,11 +67,6 @@ upload_router: APIRouter = APIRouter(tags=["catalogue-upload"])
 class QualifyRequest(BaseModel):
     """Inbound lead payload."""
 
-    tenant_id: str = Field(
-        ...,
-        min_length=1,
-        description="Tenant identifier — routes ChromaDB lookup to catalogue_{tenant_id}.",
-    )
     raw_text: str = Field(
         ...,
         min_length=10,
@@ -182,7 +179,10 @@ async def _sse_generator(
 
 
 @router.post("/stream", summary="Stream lead qualification via SSE")
-async def qualify_stream(request_body: QualifyRequest) -> StreamingResponse:
+async def qualify_stream(
+    request_body: QualifyRequest,
+    tenant_id: str = Depends(get_current_tenant_id),
+) -> StreamingResponse:
     """
     Qualify a lead and stream processing events to the caller via SSE.
 
@@ -193,10 +193,10 @@ async def qualify_stream(request_body: QualifyRequest) -> StreamingResponse:
     - ``event: error`` — JSON with ``error`` message (on unrecoverable failure)
     """
     lead_id: str = request_body.lead_id or str(uuid.uuid4())
-    lead_info = LeadInfo(id=lead_id, raw_text=request_body.raw_text, tenant_id=request_body.tenant_id)
-    thread_id: str = f"qualify-{request_body.tenant_id}-{lead_id}"
+    lead_info = LeadInfo(id=lead_id, raw_text=request_body.raw_text, tenant_id=tenant_id)
+    thread_id: str = f"qualify-{tenant_id}-{lead_id}"
 
-    logger.info("[routes] SSE stream started for lead_id=%s tenant=%s", lead_id, request_body.tenant_id)
+    logger.info("[routes] SSE stream started for lead_id=%s tenant=%s", lead_id, tenant_id)
 
     return StreamingResponse(
         _sse_generator(lead_info, thread_id),
@@ -216,7 +216,10 @@ async def qualify_stream(request_body: QualifyRequest) -> StreamingResponse:
     response_model=QualifyResponse,
     summary="Qualify a lead (synchronous, for CRM integration)",
 )
-async def qualify(request_body: QualifyRequest) -> QualifyResponse:
+async def qualify(
+    request_body: QualifyRequest,
+    tenant_id: str = Depends(get_current_tenant_id),
+) -> QualifyResponse:
     """
     Run the full qualification graph and return structured JSON.
 
@@ -224,10 +227,10 @@ async def qualify(request_body: QualifyRequest) -> QualifyResponse:
     Uses ``await graph.ainvoke(...)`` — no threads, no blocking.
     """
     lead_id: str = request_body.lead_id or str(uuid.uuid4())
-    lead_info = LeadInfo(id=lead_id, raw_text=request_body.raw_text, tenant_id=request_body.tenant_id)
-    thread_id: str = f"qualify-{request_body.tenant_id}-{lead_id}"
+    lead_info = LeadInfo(id=lead_id, raw_text=request_body.raw_text, tenant_id=tenant_id)
+    thread_id: str = f"qualify-{tenant_id}-{lead_id}"
 
-    logger.info("[routes] Sync qualification started for lead_id=%s tenant=%s", lead_id, request_body.tenant_id)
+    logger.info("[routes] Sync qualification started for lead_id=%s tenant=%s", lead_id, tenant_id)
 
     checkpointer: AsyncSqliteSaver = await get_checkpointer()
     graph = build_graph(checkpointer=checkpointer)
@@ -258,11 +261,6 @@ async def qualify(request_body: QualifyRequest) -> QualifyResponse:
 class IngestRequest(BaseModel):
     """Payload to start a new catalogue ingestion run."""
 
-    tenant_id: str = Field(
-        ...,
-        min_length=1,
-        description="Tenant identifier — scopes all DB writes and ChromaDB collections.",
-    )
     file_path: str = Field(
         ...,
         description="Absolute path to the catalogue file on the server filesystem.",
@@ -439,7 +437,10 @@ async def _ingest_sse_generator(
 # ── POST /ingest/stream ───────────────────────────────────────────────────────
 
 @ingest_router.post("/stream", summary="Ingest a service catalogue via SSE")
-async def ingest_stream(request_body: IngestRequest) -> StreamingResponse:
+async def ingest_stream(
+    request_body: IngestRequest,
+    tenant_id: str = Depends(get_current_tenant_id),
+) -> StreamingResponse:
     """
     Start a catalogue ingestion run and stream progress events via SSE.
 
@@ -452,15 +453,15 @@ async def ingest_stream(request_body: IngestRequest) -> StreamingResponse:
     The client should display the flagged items to the operator, collect the
     decision, and POST it to ``/ingest/{thread_id}/approve``.
     """
-    thread_id: str = f"ingest-{request_body.tenant_id}-{uuid.uuid4()}"
+    thread_id: str = f"ingest-{tenant_id}-{uuid.uuid4()}"
     logger.info(
         "[routes] Ingestion SSE started | tenant=%s | thread=%s | file=%s",
-        request_body.tenant_id, thread_id, request_body.file_path,
+        tenant_id, thread_id, request_body.file_path,
     )
 
     return StreamingResponse(
         _ingest_sse_generator(
-            tenant_id=request_body.tenant_id,
+            tenant_id=tenant_id,
             file_path=request_body.file_path,
             file_format=request_body.file_format,
             thread_id=thread_id,
@@ -486,6 +487,7 @@ async def ingest_stream(request_body: IngestRequest) -> StreamingResponse:
 async def approve_ingestion(
     thread_id: str,
     body: ApprovalDecision,
+    _tenant_id: str = Depends(get_current_tenant_id),
 ) -> ApprovalResponse:
     """
     Resume an ingestion graph that was suspended at ``ApprovalNode``.
@@ -586,7 +588,7 @@ def _safe_tenant_dirname(tenant_id: str) -> str:
 )
 async def upload_catalogue(
     file: UploadFile = File(...),
-    tenant_id: str = Form(...),
+    tenant_id: str = Depends(get_current_tenant_id),
 ) -> UploadResponse:
     """
     Accept a multipart catalogue file, store it tenant-scoped, return its path.
@@ -676,7 +678,10 @@ def _profile_path(safe_tenant: str) -> Path:
     tags=["tenant-profile"],
     summary="Get a tenant's company profile (returns empty defaults if unset)",
 )
-async def get_tenant_profile(tenant_id: str) -> TenantProfile:
+async def get_tenant_profile(
+    tenant_id: str,
+    _jwt_tenant: str = Depends(get_current_tenant_id),
+) -> TenantProfile:
     """Restituisce il profilo del tenant; se non esiste ritorna i default vuoti."""
     safe: str = _safe_tenant_dirname(tenant_id)
     path: Path = _profile_path(safe)
@@ -697,7 +702,11 @@ async def get_tenant_profile(tenant_id: str) -> TenantProfile:
     tags=["tenant-profile"],
     summary="Create or update a tenant's company profile",
 )
-async def put_tenant_profile(tenant_id: str, body: TenantProfile) -> TenantProfile:
+async def put_tenant_profile(
+    tenant_id: str,
+    body: TenantProfile,
+    _jwt_tenant: str = Depends(get_current_tenant_id),
+) -> TenantProfile:
     """Salva (upsert) il profilo del tenant come file JSON tenant-scoped."""
     settings = get_settings()
     safe: str = _safe_tenant_dirname(tenant_id)
@@ -719,3 +728,47 @@ async def put_tenant_profile(tenant_id: str, body: TenantProfile) -> TenantProfi
 
     logger.info("[profile] saved tenant=%s | bytes=%d", safe, len(raw.encode("utf-8")))
     return body
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AUTH  (auth_router — path: /token)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Endpoint mock per lo sviluppo e i test.  In produzione questo sarà sostituito
+# da un Identity Provider esterno (Keycloak, Auth0, ecc.) che emette token
+# firmati con la stessa SECRET_KEY (o via JWKS).
+#
+# Accetta uno username (= tenant_id) + password e restituisce un token JWT.
+# La password NON è validata: è un mock, non un sistema di autenticazione reale.
+
+class TokenRequest(BaseModel):
+    """Payload per la richiesta di un token JWT (mock)."""
+
+    username: str = Field(..., min_length=1, description="Sarà usato come tenant_id nel claim 'sub'.")
+    password: str = Field(default="", description="Non validata nel mock — solo placeholder.")
+
+
+class TokenResponse(BaseModel):
+    """Token JWT restituito dall'endpoint /token."""
+
+    access_token: str
+    token_type: str = "bearer"
+
+
+@auth_router.post(
+    "/token",
+    response_model=TokenResponse,
+    summary="Ottieni un token JWT (mock — username diventa tenant_id)",
+)
+async def get_token(body: TokenRequest) -> TokenResponse:
+    """
+    Emette un token JWT firmato con la ``JWT_SECRET_KEY`` corrente.
+
+    Il claim ``sub`` viene impostato allo ``username`` fornito, che funge da
+    ``tenant_id`` in tutti gli endpoint protetti.
+
+    **Nota**: questa implementazione è un mock per sviluppo/test.
+    In produzione usare un IdP esterno.
+    """
+    token: str = create_access_token(tenant_id=body.username)
+    return TokenResponse(access_token=token)

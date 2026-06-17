@@ -102,6 +102,17 @@ class Settings(BaseSettings):
         default=1,
         description="Minimum mapped services required to consider the Mapper successful.",
     )
+    mapper_max_distance: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "Se > 0, il Mapper scarta i match con distance (coseno) oltre questa "
+            "soglia. 0 = disabilitato (comportamento storico: tieni sempre il match "
+            "più vicino). Con la soglia attiva, una query fuori catalogo svuota "
+            "mapped_services → route_after_mapper → retry → human_fallback "
+            "(niente preventivi 'allucinati' su match irrilevanti)."
+        ),
+    )
 
     # ── API ───────────────────────────────────────────────────────────────────
     api_host: str = Field(default="0.0.0.0")

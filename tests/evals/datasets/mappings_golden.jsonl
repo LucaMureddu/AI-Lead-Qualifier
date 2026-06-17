@@ -1,3 +1,4 @@
-{"query": "vorremmo un sito web aziendale moderno", "expect_match_contains": "sito web", "max_distance": 1.3}
-{"query": "vogliamo posizionarci meglio su google", "expect_match_contains": "seo", "max_distance": 1.4}
-{"query": "spostare i nostri server sul cloud", "expect_match_contains": "cloud", "max_distance": 1.3}
+{"query": "vorremmo un sito web aziendale moderno", "expect_match_contains": "sito web", "max_distance": 0.5}
+{"query": "vogliamo posizionarci meglio su google", "expect_match_contains": "seo", "max_distance": 0.5}
+{"query": "spostare i nostri server sul cloud", "expect_match_contains": "cloud", "max_distance": 0.5}
+{"query": "celle frigorifere industriali per surgelati", "off_target": true, "min_distance": 0.5}

@@ -11,10 +11,75 @@
   </head>
   <body>
     <div
-      x-data="{ view: 'qualify', sidebarOpen: false }"
+      x-data="{ view: 'qualify', sidebarOpen: false, loginUsername: '' }"
       x-cloak
-      class="min-h-screen flex"
+      class="min-h-screen"
     >
+
+      <!-- ══════════════════════════════════════════════════════════════════ -->
+      <!-- SCHERMATA DI LOGIN (visibile solo se non autenticato)             -->
+      <!-- ══════════════════════════════════════════════════════════════════ -->
+      <div
+        x-show="!$store.auth.isAuthenticated"
+        class="min-h-screen bg-slate-50 flex items-center justify-center p-4"
+      >
+        <div class="card w-full max-w-sm">
+          <!-- Brand -->
+          <div class="flex items-center gap-3 mb-6">
+            <span class="inline-flex w-10 h-10 items-center justify-center rounded-xl bg-indigo-600 text-white shrink-0">
+              <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z"/></svg>
+            </span>
+            <div class="leading-tight">
+              <p class="font-semibold text-slate-800">Lead Qualifier</p>
+              <p class="text-xs text-slate-400">AI Console — Private Cloud</p>
+            </div>
+          </div>
+
+          <h2 class="text-xl font-bold text-slate-800 mb-1">Accedi</h2>
+          <p class="text-sm text-slate-500 mb-5">
+            Il tuo username identifica il tenant attivo.
+          </p>
+
+          <label class="block mb-4">
+            <span class="text-sm text-slate-600">Username / Tenant ID</span>
+            <input
+              type="text"
+              class="input-text mt-1"
+              placeholder="es. acme"
+              x-model="loginUsername"
+              :disabled="$store.auth.isLoggingIn"
+              @keydown.enter.prevent="App.login(loginUsername)"
+              autofocus
+            />
+          </label>
+
+          <template x-if="$store.auth.loginError">
+            <p class="text-sm text-rose-600 mb-4 -mt-2" x-text="$store.auth.loginError"></p>
+          </template>
+
+          <button
+            class="btn-primary w-full"
+            :disabled="!loginUsername.trim() || $store.auth.isLoggingIn"
+            @click="App.login(loginUsername)"
+          >
+            <svg
+              x-show="$store.auth.isLoggingIn"
+              class="spinner w-4 h-4"
+              viewBox="0 0 24 24"
+              fill="none"
+            >
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+              <path class="opacity-75" d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" stroke-linecap="round" />
+            </svg>
+            <span x-text="$store.auth.isLoggingIn ? 'Accesso in corso…' : 'Entra'"></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════════════════════════ -->
+      <!-- APP PRINCIPALE (visibile solo se autenticato)                     -->
+      <!-- ══════════════════════════════════════════════════════════════════ -->
+      <div x-show="$store.auth.isAuthenticated" class="min-h-screen flex">
       <!-- ── Overlay mobile ─────────────────────────────────────────────── -->
       <div
         x-show="sidebarOpen"
@@ -104,35 +169,6 @@
             ></h1>
 
             <div class="ml-auto flex items-center gap-2 sm:gap-3">
-              <!-- Selettore Tenant + nuovo tenant (B2) -->
-              <div class="hidden sm:flex items-center gap-2">
-                <label class="text-xs text-slate-500">Tenant</label>
-                <select
-                  class="input-text !w-auto py-1.5 text-sm"
-                  x-model="$store.connection.tenantId"
-                >
-                  <template x-for="t in $store.connection.tenants" :key="t">
-                    <option :value="t" x-text="t"></option>
-                  </template>
-                </select>
-                <div class="flex items-center gap-1">
-                  <input
-                    type="text"
-                    class="input-text !w-36 py-1.5 text-sm"
-                    placeholder="Nuovo tenant…"
-                    x-model="$store.connection.newTenant"
-                    @keydown.enter.prevent="$store.connection.addTenant($store.connection.newTenant)"
-                  />
-                  <button
-                    class="btn-primary !px-2.5 !py-1.5 text-sm"
-                    title="Aggiungi e seleziona il tenant"
-                    @click="$store.connection.addTenant($store.connection.newTenant)"
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-
               <!-- Badge API -->
               <span
                 class="badge"
@@ -145,39 +181,20 @@
                 <span class="hidden sm:inline" x-text="$store.connection.apiConnected ? 'API Connected' : 'API Offline'"></span>
               </span>
 
-              <!-- Icona utente -->
-              <span
-                class="inline-flex w-9 h-9 items-center justify-center rounded-full bg-slate-100 text-slate-500"
+              <!-- Utente corrente + Logout -->
+              <button
+                class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm text-slate-600 hover:bg-slate-100 transition-colors border border-slate-200"
+                title="Logout"
+                @click="App.logout()"
               >
-                <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-              </span>
+                <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                <span class="hidden sm:inline font-mono text-xs max-w-[7rem] truncate" x-text="$store.auth.tenantId || '—'"></span>
+                <!-- icona logout -->
+                <svg class="w-3.5 h-3.5 shrink-0 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+              </button>
             </div>
           </div>
 
-          <!-- Selettore tenant compatto (mobile) -->
-          <div class="sm:hidden flex items-center gap-2 px-4 pb-3">
-            <select
-              class="input-text !w-auto flex-1 py-1.5 text-sm"
-              x-model="$store.connection.tenantId"
-            >
-              <template x-for="t in $store.connection.tenants" :key="t">
-                <option :value="t" x-text="t"></option>
-              </template>
-            </select>
-            <input
-              type="text"
-              class="input-text flex-1 py-1.5 text-sm"
-              placeholder="Nuovo tenant…"
-              x-model="$store.connection.newTenant"
-              @keydown.enter.prevent="$store.connection.addTenant($store.connection.newTenant)"
-            />
-            <button
-              class="btn-primary !px-3 !py-1.5 text-sm"
-              @click="$store.connection.addTenant($store.connection.newTenant)"
-            >
-              +
-            </button>
-          </div>
         </header>
 
         <!-- Main content -->
@@ -394,7 +411,7 @@
                 />
                 <p class="text-xs text-slate-400 mt-3">
                   Tenant attivo:
-                  <span class="font-mono text-slate-600" x-text="$store.connection.tenantId"></span>
+                  <span class="font-mono text-slate-600" x-text="$store.auth.tenantId || $store.connection.tenantId"></span>
                 </p>
               </div>
 
@@ -590,47 +607,33 @@
                   </div>
                   <div class="flex justify-between gap-4">
                     <dt class="text-slate-500">Tenant attivo</dt>
-                    <dd class="font-mono text-slate-700" x-text="$store.connection.tenantId"></dd>
+                    <dd class="font-mono text-slate-700" x-text="$store.auth.tenantId || $store.connection.tenantId"></dd>
                   </div>
                 </dl>
               </div>
 
               <div class="card">
-                <h2 class="font-semibold text-slate-800">Tenant noti</h2>
+                <h2 class="font-semibold text-slate-800">Sessione corrente</h2>
                 <p class="text-sm text-slate-500 mt-1">
-                  Aggiungi un nuovo tenant per onboardarlo direttamente dalla UI: il
-                  primo catalogo caricato creerà la collezione
-                  <span class="font-mono">catalogue_&lt;tenant&gt;</span>.
+                  Il tenant è fissato dal token JWT della sessione.
+                  Per cambiare tenant effettua logout e accedi con un username diverso.
                 </p>
-                <div class="flex items-center gap-2 mt-3">
-                  <input
-                    type="text"
-                    class="input-text flex-1"
-                    placeholder="ID nuovo tenant (A–Z, 0–9, _ -)"
-                    x-model="$store.connection.newTenant"
-                    @keydown.enter.prevent="$store.connection.addTenant($store.connection.newTenant)"
-                  />
-                  <button class="btn-primary" @click="$store.connection.addTenant($store.connection.newTenant)">Aggiungi</button>
+                <div class="mt-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p class="text-xs text-slate-400">Tenant attivo</p>
+                    <p class="font-mono text-slate-800 font-semibold" x-text="$store.auth.tenantId || '—'"></p>
+                  </div>
+                  <button class="btn-ghost !py-1.5 text-sm" @click="App.logout()">
+                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+                    Logout
+                  </button>
                 </div>
-                <ul class="mt-4 divide-y divide-slate-100">
-                  <template x-for="t in $store.connection.tenants" :key="t">
-                    <li class="flex items-center justify-between py-2.5">
-                      <span class="font-mono text-sm text-slate-700" x-text="t"></span>
-                      <button
-                        class="text-sm"
-                        :class="$store.connection.tenantId === t ? 'text-emerald-600 font-semibold' : 'text-indigo-600 hover:underline'"
-                        @click="$store.connection.tenantId = t"
-                        x-text="$store.connection.tenantId === t ? 'Attivo' : 'Seleziona'"
-                      ></button>
-                    </li>
-                  </template>
-                </ul>
               </div>
 
               <div class="card">
                 <div class="flex items-center justify-between gap-3">
                   <h2 class="font-semibold text-slate-800">Profilo azienda (per tenant)</h2>
-                  <span class="text-xs text-slate-400">Tenant: <span class="font-mono text-slate-600" x-text="$store.connection.tenantId"></span></span>
+                  <span class="text-xs text-slate-400">Tenant: <span class="font-mono text-slate-600" x-text="$store.auth.tenantId || $store.connection.tenantId"></span></span>
                 </div>
                 <p class="text-sm text-slate-500 mt-1">
                   Dati del mittente usati nel preventivo (email e PDF). Salvati sul server, per questo tenant.
@@ -731,7 +734,9 @@
           </div>
         </main>
       </div>
+      <!-- fine .min-h-screen.flex (app principale) -->
     </div>
+    <!-- fine x-data wrapper -->
 
     <script type="module" src="/src/app.js"></script>
   </body>

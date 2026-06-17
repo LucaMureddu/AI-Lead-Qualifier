@@ -25,7 +25,6 @@ _FLAGGED = '[{"name": "??", "price": 0, "currency": "EUR", "confidence": 0.3}]'
 async def test_ingest_stream_header_and_interrupt(api_client) -> None:
     with patch("agents.extractor._call_openai_compatible", new=AsyncMock(return_value=_FLAGGED)):
         r = await api_client.post("/ingest/stream", json={
-            "tenant_id": "acme",
             "file_path": str(_PROBLEMATIC_CSV),
             "file_format": "csv",
         })
@@ -85,7 +84,7 @@ async def test_ingest_stream_clean_emits_done(api_client, tmp_path) -> None:
     with patch("agents.extractor._call_openai_compatible", new=AsyncMock(return_value=clean)), \
          patch("ingestion.graph._write_to_chroma_sync", MagicMock(return_value=1)):
         r = await api_client.post("/ingest/stream", json={
-            "tenant_id": "acme", "file_path": str(f), "file_format": "csv",
+            "file_path": str(f), "file_format": "csv",
         })
     assert r.status_code == 200
     assert "event: done" in r.text

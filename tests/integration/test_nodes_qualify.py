@@ -193,3 +193,40 @@ async def test_extractor_generic_exception_handled(make_lead_state) -> None:
     assert out["extracted_services"] == []
     assert out["retry_count"] == 1
     assert out["error"] is not None
+
+
+# ── Mapper: sbarramento per distanza (mapper_max_distance) ─────────────────────
+
+def _chroma_result(distance: float) -> dict:
+    return {
+        "ids": [["svc-x"]],
+        "documents": [["Doc X"]],
+        "metadatas": [[{"service_name": "X", "price": 1.0, "unit": "€"}]],
+        "distances": [[distance]],
+    }
+
+
+async def test_mapper_drops_match_above_distance_threshold(make_lead_state, monkeypatch) -> None:
+    monkeypatch.setenv("MAPPER_MAX_DISTANCE", "0.5")
+    get_settings.cache_clear()
+    with patch("agents.mapper._query_chroma_sync", return_value=_chroma_result(0.9)):
+        out = await mapper_node(make_lead_state(extracted_services=["celle frigorifere"]))
+    assert out["mapped_services"] == []   # match oltre soglia → scartato (off-target)
+    assert out["error"] is None
+
+
+async def test_mapper_keeps_match_below_distance_threshold(make_lead_state, monkeypatch) -> None:
+    monkeypatch.setenv("MAPPER_MAX_DISTANCE", "0.5")
+    get_settings.cache_clear()
+    with patch("agents.mapper._query_chroma_sync", return_value=_chroma_result(0.3)):
+        out = await mapper_node(make_lead_state(extracted_services=["sito web"]))
+    assert len(out["mapped_services"]) == 1   # sotto soglia → tenuto
+
+
+async def test_mapper_threshold_disabled_keeps_far_match(make_lead_state, monkeypatch) -> None:
+    # default mapper_max_distance=0.0 → disabilitato → tiene anche un match lontano.
+    monkeypatch.delenv("MAPPER_MAX_DISTANCE", raising=False)
+    get_settings.cache_clear()
+    with patch("agents.mapper._query_chroma_sync", return_value=_chroma_result(0.9)):
+        out = await mapper_node(make_lead_state(extracted_services=["x"]))
+    assert len(out["mapped_services"]) == 1   # soglia disattiva → comportamento storico
