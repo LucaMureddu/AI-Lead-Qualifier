@@ -87,9 +87,6 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 # ── Pipeline constants ────────────────────────────────────────────────────────
 
-CHUNK_SIZE: int = get_settings().ingestion_chunk_size
-"""Number of raw rows per normalisation batch (configurabile via INGESTION_CHUNK_SIZE in .env)."""
-
 CONFIDENCE_THRESHOLD: float = 0.75
 """
 Average confidence below which the entire batch is routed to human review.
@@ -175,10 +172,11 @@ async def chunker_node(state: IngestionState) -> Dict:
         logger.exception(error_msg)
         return {"raw_chunks": [], "sse_logs": [f"[ERROR] {error_msg}"], "error": error_msg}
 
-    chunks = _split_chunks(rows, CHUNK_SIZE)
+    chunk_size: int = get_settings().ingestion_chunk_size
+    chunks = _split_chunks(rows, chunk_size)
     log_entry = (
         f"[CHUNKER] tenant={tenant_id} | rows={len(rows)} | "
-        f"chunks={len(chunks)} | chunk_size={CHUNK_SIZE}"
+        f"chunks={len(chunks)} | chunk_size={chunk_size}"
     )
     logger.info(log_entry)
 
