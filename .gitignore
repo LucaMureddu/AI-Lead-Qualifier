@@ -34,5 +34,11 @@ data/profiles/          # profili tenant generati a runtime
 node_modules/
 dist/
 
+# ── Playwright (E2E) ──────────────────────────────────────────────────────────
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
 # NB: NON ignorare i dataset/snapshot degli evals (tests/evals/datasets, snapshots)
 # né i CSV di esempio in root: vanno versionati.
