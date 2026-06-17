@@ -50,8 +50,10 @@ def _reset_settings_cache(monkeypatch, tmp_path):
 async def checkpointer():
     """AsyncSqliteSaver in-memory: supporta interrupt/resume, zero I/O su disco."""
     conn = await aiosqlite.connect(":memory:")
+    saver = AsyncSqliteSaver(conn)
+    await saver.setup()  # crea le tabelle SQLite richieste da LangGraph >= 0.2
     try:
-        yield AsyncSqliteSaver(conn)
+        yield saver
     finally:
         await conn.close()
 

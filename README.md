@@ -248,7 +248,7 @@ I dati sopravvivono ai restart grazie a tre volumi Docker gestiti automaticament
 | Variabile | Default | Descrizione |
 |-----------|---------|-------------|
 | `MAPPER_MAX_DISTANCE` | `0.55` | Soglia distanza coseno: match scartati se distanza > valore. Valori più bassi = più restrittivo; consigliato 0.55 per cataloghi multilingua o con sinonimi. |
-| `INGESTION_CHUNK_SIZE` | `5` | Righe per batch nel normalizer. Valori bassi (5–10) per LLM locali con limite di token. |
+| `INGESTION_CHUNK_SIZE` | `10` | Righe per batch nel normalizer. Valori bassi (5–10) per LLM locali con limite di token. |
 | `JWT_SECRET_KEY` | — | Segreto HMAC per la firma dei JWT. Obbligatorio in produzione. |
 | `LLM_BASE_URL` | `http://host.docker.internal:11434/v1` | Endpoint OpenAI-compatible del modello locale (Ollama/LM Studio/vLLM). |
 
