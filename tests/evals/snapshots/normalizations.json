@@ -1,0 +1,80 @@
+{
+  "_comment": "Generato da tests/evals/capture_snapshots.py — NON modificare a mano.",
+  "_generated": true,
+  "generated_at": "2026-06-17T01:28:49.455956+00:00",
+  "model": "qwen-coder",
+  "catalogs": {
+    "dirty_catalog.csv": {
+      "flagged_count": 0,
+      "confidence_score": 0.9,
+      "items": [
+        {
+          "name": "Sviluppo Landing Page",
+          "price": 500.0,
+          "currency": "EUR",
+          "flagged": false
+        },
+        {
+          "name": "Setup Server di Posta",
+          "price": 300.0,
+          "currency": "EUR",
+          "flagged": false
+        },
+        {
+          "name": "Consulenza SEO mensile",
+          "price": 150.5,
+          "currency": "EUR",
+          "flagged": false
+        },
+        {
+          "name": "Audit di Sicurezza Standard",
+          "price": 1200.0,
+          "currency": "EUR",
+          "flagged": false
+        },
+        {
+          "name": "Manutenzione Server",
+          "price": 0.0,
+          "currency": "EUR",
+          "flagged": false
+        }
+      ]
+    },
+    "catalogo_problematico.csv": {
+      "flagged_count": 5,
+      "confidence_score": 0.56,
+      "items": [
+        {
+          "name": "Servizio Senza Prezzo",
+          "price": 0.0,
+          "currency": "EUR",
+          "flagged": false
+        },
+        {
+          "name": "X",
+          "price": 0.0,
+          "currency": "EUR",
+          "flagged": false
+        },
+        {
+          "name": "Y",
+          "price": 0.0,
+          "currency": "EUR",
+          "flagged": false
+        },
+        {
+          "name": "Pacchetto Ignoto",
+          "price": 0.0,
+          "currency": "EUR",
+          "flagged": false
+        },
+        {
+          "name": "?",
+          "price": 0.0,
+          "currency": "EUR",
+          "flagged": false
+        }
+      ]
+    }
+  }
+}

@@ -36,6 +36,9 @@ from core.state import LeadInfo
 _HERE = Path(__file__).resolve().parent
 _GOLDEN_PATH = _HERE / "datasets" / "leads_golden.jsonl"
 _SNAPSHOT_PATH = _HERE / "snapshots" / "extractions.json"
+_NORM_PATH = _HERE / "snapshots" / "normalizations.json"
+_ROOT = _HERE.parents[1]
+_CATALOGS = ["dirty_catalog.csv", "catalogo_problematico.csv"]
 
 
 def _load_golden() -> List[Dict[str, Any]]:
@@ -87,6 +90,67 @@ async def main() -> None:
     _SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
     _SNAPSHOT_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"[capture] scritto {_SNAPSHOT_PATH}")
+
+    # ── Normalizzazioni (cataloghi sporco/problematico) → Binario A normalizzazione ──
+    from tests.evals._pipeline import run_normalization  # noqa: PLC0415
+
+    catalogs: Dict[str, Any] = {}
+    for name in _CATALOGS:
+        res = await run_normalization(_ROOT / name)
+        print(
+            f"  [norm] {name}: items={len(res['items'])} "
+            f"flagged={res['flagged_count']} conf={res['confidence_score']:.2f}"
+        )
+        catalogs[name] = {
+            "flagged_count": res["flagged_count"],
+            "confidence_score": res["confidence_score"],
+            "items": res["items"],
+        }
+    norm_payload = {
+        "_comment": "Generato da tests/evals/capture_snapshots.py — NON modificare a mano.",
+        "_generated": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "model": settings.llm_model_name,
+        "catalogs": catalogs,
+    }
+    _NORM_PATH.write_text(json.dumps(norm_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"[capture] scritto {_NORM_PATH}")
+
+    # ── Mapping (RAG su ChromaDB) → Binario A mapping. Richiede ChromaDB attivo. ──
+    # Graceful: se Chroma è giù, salta senza interrompere extraction/normalization.
+    try:
+        from tests.evals._mapper import run_mapper, seed_catalog  # noqa: PLC0415
+
+        seed_catalog(settings.chroma_host, settings.chroma_port)
+        map_golden = [
+            json.loads(line)
+            for line in (_HERE / "datasets" / "mappings_golden.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        mappings = []
+        for row in map_golden:
+            mapped = await run_mapper([row["query"]])
+            best = mapped[0] if mapped else {}
+            print(f"  [map] {row['query']} → {best.get('matched_name', '∅')} (d={best.get('distance')})")
+            mappings.append({
+                "query": row["query"],
+                "matched_name": best.get("matched_name", ""),
+                "distance": best.get("distance"),
+                "expect_match_contains": row["expect_match_contains"],
+                "max_distance": row["max_distance"],
+            })
+        map_payload = {
+            "_comment": "Generato da tests/evals/capture_snapshots.py — NON modificare a mano.",
+            "_generated": True,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "model": "all-MiniLM-L6-v2 (ChromaDB)",
+            "mappings": mappings,
+        }
+        _MAP_PATH = _HERE / "snapshots" / "mappings.json"
+        _MAP_PATH.write_text(json.dumps(map_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"[capture] scritto {_MAP_PATH}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[capture] mapping SALTATO (ChromaDB non raggiungibile?): {exc}")
 
 
 if __name__ == "__main__":

@@ -108,3 +108,45 @@ test("estensione non supportata → fase error", async ({ page }) => {
   });
   await expect(page.getByText(/Estensione non supportata/)).toBeVisible();
 });
+
+test("upload → review → Correggi e riprocessa → completata", async ({ page }) => {
+  // /approve è lo step 1 (best-effort) del retry: chiude la run sospesa.
+  await page.route("**/ingest/*/approve", (r) =>
+    r.fulfill({
+      json: { thread_id: THREAD, status: "rejected", total_items: 3, flagged_count: 1, validation_errors: [] },
+    }),
+  );
+
+  // Sovrascrive il mock del beforeEach: 1ª /ingest/stream → interrupt;
+  // 2ª (quella con review_feedback nel body) → done.
+  await page.unroute("**/ingest/stream");
+  await page.route("**/ingest/stream", (r) => {
+    const body = r.request().postDataJSON() || {};
+    if (body.review_feedback) {
+      r.fulfill({
+        status: 200,
+        headers: { "content-type": "text/event-stream", "x-thread-id": THREAD + "-2" },
+        body: sse(
+          "event: log\ndata: [NORMALIZER] reprocess con feedback",
+          "event: done\ndata: " +
+            JSON.stringify({ thread_id: THREAD + "-2", tenant_id: TENANT, total_items: 3, flagged_count: 0, validation_errors: [] }),
+        ),
+      });
+    } else {
+      r.fulfill({
+        status: 200,
+        headers: { "content-type": "text/event-stream", "x-thread-id": THREAD },
+        body: sse(
+          "event: log\ndata: [VALIDATOR] flagged=1",
+          "event: interrupt\ndata: " +
+            JSON.stringify({ thread_id: THREAD, tenant_id: TENANT, review_payload: REVIEW_PAYLOAD }),
+        ),
+      });
+    }
+  });
+
+  await uploadAndReachReview(page);
+  await page.getByPlaceholder(/Feedback opzionale/).fill("Correggi i prezzi nulli");
+  await page.getByRole("button", { name: /Correggi e riprocessa/ }).click();
+  await expect(page.getByText("Ingestion completata")).toBeVisible();
+});
