@@ -8,16 +8,18 @@ on:
 
 jobs:
   # ── Lint + type-check ───────────────────────────────────────────────────────
-  # ruff e mypy sono entrambi gate bloccanti (codebase e tipi ripuliti).
   lint-and-type:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: requirements-ci.txt
+          cache-dependency-path: backend/requirements-ci.txt
       - run: pip install -r requirements-ci.txt
       - run: ruff check .
       - run: mypy core agents ingestion adapters api
@@ -27,13 +29,16 @@ jobs:
   # Gli eval LIVE (-m eval) NON girano in CI: niente LLM sui runner.
   backend-tests:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: requirements-ci.txt
+          cache-dependency-path: backend/requirements-ci.txt
       - run: pip install -r requirements-ci.txt
       - run: pytest -m "not eval" --cov --cov-report=term-missing
 
