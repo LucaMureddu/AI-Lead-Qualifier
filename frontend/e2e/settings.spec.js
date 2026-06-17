@@ -3,11 +3,13 @@
 // Impostazioni: salvataggio profilo (PUT mockato) e badge connessione.
 
 import { test, expect } from "@playwright/test";
+import { seedAuth } from "./helpers.js";
 
 const TENANT = "cliente_acme_01";
 const EMPTY_PROFILE = { tenant_id: TENANT, company_name: "", vat_enabled: true, vat_rate: 0.22, validity_days: 30 };
 
 test("salva profilo → conferma 'Salvato' e payload corretto", async ({ page }) => {
+  await seedAuth(page);
   await page.route("**/health", (r) => r.fulfill({ json: { status: "ok" } }));
 
   let putBody = null;
@@ -38,6 +40,7 @@ test("salva profilo → conferma 'Salvato' e payload corretto", async ({ page })
 });
 
 test("badge 'API Offline' quando /health fallisce", async ({ page }) => {
+  await seedAuth(page);
   await page.route("**/health", (r) => r.fulfill({ status: 500, body: "" }));
   await page.route("**/tenants/**/profile", (r) => r.fulfill({ json: EMPTY_PROFILE }));
 

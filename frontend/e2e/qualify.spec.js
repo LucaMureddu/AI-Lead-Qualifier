@@ -5,6 +5,7 @@
 // mockato deve simulare i frame: righe "event:"/"data:" separate da "\n\n".
 
 import { test, expect } from "@playwright/test";
+import { seedAuth } from "./helpers.js";
 
 const PROFILE = {
   tenant_id: "cliente_acme_01",
@@ -19,6 +20,8 @@ function sse(...frames) {
 }
 
 test.beforeEach(async ({ page }) => {
+  // Autentica pre-seeding localStorage PRIMA che Alpine carichi gli store.
+  await seedAuth(page);
   // /health (badge) e /profile (caricato all'avvio) sempre mockati: niente backend reale.
   await page.route("**/health", (r) => r.fulfill({ json: { status: "ok" } }));
   await page.route("**/tenants/**/profile", (r) => r.fulfill({ json: PROFILE }));

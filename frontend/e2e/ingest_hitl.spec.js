@@ -10,6 +10,7 @@
 //   interrupt; il frontend usa l'uno o l'altro per chiamare /approve.
 
 import { test, expect } from "@playwright/test";
+import { seedAuth } from "./helpers.js";
 
 const TENANT = "cliente_acme_01";
 const THREAD = "ingest-cliente_acme_01-abc123";
@@ -45,6 +46,8 @@ function sse(...frames) {
 }
 
 test.beforeEach(async ({ page }) => {
+  // Autentica pre-seeding localStorage PRIMA che Alpine carichi gli store.
+  await seedAuth(page);
   await page.route("**/health", (r) => r.fulfill({ json: { status: "ok" } }));
   await page.route("**/tenants/**/profile", (r) => r.fulfill({ json: PROFILE }));
   await page.route("**/upload", (r) =>
