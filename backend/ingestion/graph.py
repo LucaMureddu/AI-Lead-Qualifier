@@ -87,8 +87,8 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 # ── Pipeline constants ────────────────────────────────────────────────────────
 
-CHUNK_SIZE: int = 50
-"""Number of raw rows per normalisation batch."""
+CHUNK_SIZE: int = get_settings().ingestion_chunk_size
+"""Number of raw rows per normalisation batch (configurabile via INGESTION_CHUNK_SIZE in .env)."""
 
 CONFIDENCE_THRESHOLD: float = 0.75
 """
@@ -213,7 +213,7 @@ Target schema for each item (return a JSON array of these objects):
   "category":    string  — optional, service category / product line
   "price":       number  — required, unit price (must be >= 0; use 0.0 if unknown)
   "currency":    string  — ISO 4217 code, default "EUR"
-  "unit":        string  — optional billing unit: "hour"|"month"|"project"|"license"|"user"
+  "unit":        string  — optional billing unit: "hour"|"month"|"year"|"project"|"license"|"user"|"one-time"
   "confidence":  number  — your confidence in this mapping, between 0.0 and 1.0
 }
 
@@ -407,7 +407,7 @@ async def validator_node(state: IngestionState) -> Dict:
             item_errors.append(f"name too short: '{item.name}'")
 
         # Business rule: unknown unit values
-        known_units = {None, "hour", "month", "project", "license", "user", "day", "year"}
+        known_units = {None, "hour", "month", "project", "license", "user", "day", "year", "one-time"}
         if item.unit and item.unit not in known_units:
             item_errors.append(f"unrecognised unit: '{item.unit}'")
 
@@ -646,9 +646,21 @@ async def finalizer_node(state: IngestionState) -> Dict:
             items_to_write,
         )
     except Exception as exc:  # noqa: BLE001
-        error_msg = f"[finalizer] ChromaDB write failed for tenant={tenant_id}: {exc}"
+        import traceback  # noqa: PLC0415
+        tb = traceback.format_exc()
+        exc_type = type(exc).__name__
+        error_msg = (
+            f"[finalizer] ChromaDB write failed for tenant={tenant_id}: "
+            f"[{exc_type}] {exc}"
+        )
         logger.exception(error_msg)
-        return {"sse_logs": [f"[ERROR] {error_msg}"], "error": error_msg}
+        # Expose traceback in SSE so the UI shows the full context
+        sse_lines = [
+            f"[ERROR] {error_msg}",
+            f"[ERROR] host={settings.chroma_host}:{settings.chroma_port}  collection=catalogue_{tenant_id}",
+            *[f"[ERROR] {line}" for line in tb.splitlines()[-10:]],
+        ]
+        return {"sse_logs": sse_lines, "error": error_msg}
 
     log_entry = (
         f"[FINALIZER] tenant={tenant_id} | written={written} | "

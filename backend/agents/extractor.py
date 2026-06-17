@@ -42,8 +42,12 @@ _SYSTEM_PROMPT: str = (
     "You are a B2B sales assistant. "
     "Extract a JSON array of professional service names explicitly or implicitly requested "
     "in the following text. "
+    "CRITICAL LANGUAGE RULE: YOU MUST PRESERVE THE ORIGINAL LANGUAGE OF THE REQUEST. "
+    "If the user writes in Italian, extract service names IN ITALIAN. "
+    "If the user writes in English, extract in English. NEVER translate. "
     "Return ONLY a valid JSON array of strings, no commentary, no markdown fences. "
-    "Example output: [\"Web Development\", \"SEO Audit\", \"Cloud Migration\"]"
+    "Example (Italian input): [\"Sviluppo Web\", \"Manutenzione Server\", \"Migrazione Cloud\"] "
+    "Example (English input): [\"Web Development\", \"SEO Audit\", \"Cloud Migration\"]"
 )
 
 

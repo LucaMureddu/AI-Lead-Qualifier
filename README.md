@@ -49,7 +49,9 @@
 
 **Ingestion con Human-in-the-Loop** — il grafo di ingestion si auto-sospende via `interrupt()` di LangGraph quando la confidenza media scende sotto 0.75 o almeno un item è flaggato. Il checkpoint viene persistito su SQLite; l'operatore riprende con `POST /ingest/{thread_id}/approve`.
 
-**Qualifica Lead RAG con thresholding semantico** — l'Extractor identifica i servizi richiesti via LLM, il Mapper li trova nel catalogo tenant via similarità coseno su ChromaDB (soglia `MAPPER_MAX_DISTANCE`). Se il mapping fallisce, il grafo ritenta fino a `MAX_RETRY_COUNT` volte con feedback negativo nel prompt; oltre soglia, escalation a fallback umano.
+**Qualifica Lead RAG con thresholding semantico** — l'Extractor identifica i servizi richiesti via LLM, il Mapper li trova nel catalogo tenant via similarità coseno su ChromaDB. Match con distanza coseno superiore a `MAPPER_MAX_DISTANCE` (default `0.55` in `.env`) vengono scartati per evitare preventivi su servizi fuori catalogo. Se il mapping fallisce, il grafo ritenta fino a `MAX_RETRY_COUNT` volte con feedback negativo nel prompt; oltre soglia, escalation a fallback umano.
+
+**Preservazione della lingua nel prompt dell'Extractor** — il system prompt dell'Extractor impone esplicitamente di mantenere la lingua originale della richiesta del lead (italiano → estrae in italiano, inglese → estrae in inglese). Questo abbassa drasticamente la distanza coseno nel Mapper quando il catalogo è scritto in una lingua diversa da quella dominante del modello LLM (es. Qwen/Llama che tendono a ragionare in inglese su cataloghi in italiano).
 
 **Delivery Layer a plugin** — il `BaseDeliveryAdapter` disaccoppia la consegna del preventivo: `ConsoleAdapter` in sviluppo, `WebhookAdapter` (httpx async, retry gestito dallo stato LangGraph) in produzione. La `factory` è il solo punto da estendere per aggiungere canali.
 
@@ -241,6 +243,15 @@ I dati sopravvivono ai restart grazie a tre volumi Docker gestiti automaticament
 | `sqlite_data` | Checkpoint LangGraph (thread di qualifica e ingestion) |
 | `uploads_data` | File CSV/JSON/XLSX caricati dai tenant |
 
+### Variabili d'ambiente chiave
+
+| Variabile | Default | Descrizione |
+|-----------|---------|-------------|
+| `MAPPER_MAX_DISTANCE` | `0.55` | Soglia distanza coseno: match scartati se distanza > valore. Valori più bassi = più restrittivo; consigliato 0.55 per cataloghi multilingua o con sinonimi. |
+| `INGESTION_CHUNK_SIZE` | `5` | Righe per batch nel normalizer. Valori bassi (5–10) per LLM locali con limite di token. |
+| `JWT_SECRET_KEY` | — | Segreto HMAC per la firma dei JWT. Obbligatorio in produzione. |
+| `LLM_BASE_URL` | `http://host.docker.internal:11434/v1` | Endpoint OpenAI-compatible del modello locale (Ollama/LM Studio/vLLM). |
+
 ### Nota per server Linux
 
 Se esegui i container su un server Linux e il tuo modello Ollama si trova sull'host (non in Docker), decommenta le righe `extra_hosts` nel `docker-compose.yml` per permettere al backend di risolvere `host.docker.internal`:
@@ -258,7 +269,7 @@ extra_hosts:
 |--------|-----------|
 | Web framework | FastAPI + Uvicorn (ASGI), SSE via `StreamingResponse` |
 | Orchestrazione agenti | LangGraph (`StateGraph`, `interrupt()`, `AsyncSqliteSaver`) |
-| Database vettoriale | ChromaDB (Client/Server, `HttpClient`) |
+| Database vettoriale | ChromaDB `0.5.3` (Client/Server, `HttpClient`) — versione client pinnata in `requirements.txt` per compatibilità con l'immagine Docker |
 | Validazione & config | Pydantic v2 + `pydantic-settings` |
 | Inferenza LLM | Ollama / LM Studio / vLLM (OpenAI-compatible); fallback Groq |
 | HTTP client async | httpx |

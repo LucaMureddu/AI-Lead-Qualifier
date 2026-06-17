@@ -413,6 +413,20 @@
                   Tenant attivo:
                   <span class="font-mono text-slate-600" x-text="$store.auth.tenantId || $store.connection.tenantId"></span>
                 </p>
+
+                <!-- Reset catalogo esistente -->
+                <div class="mt-5 pt-5 border-t border-slate-200">
+                  <p class="text-xs text-slate-500 mb-2">
+                    Vuoi sostituire il catalogo esistente? Prima resettalo, poi carica il nuovo file.
+                  </p>
+                  <button
+                    class="btn-danger !text-sm !py-1.5 !px-3"
+                    data-testid="wipe-catalogue-btn"
+                    @click="App.wipeCatalogue()"
+                  >
+                    🗑 Resetta catalogo
+                  </button>
+                </div>
               </div>
 
               <!-- UPLOADING / PROCESSING -->

@@ -82,6 +82,11 @@ class Settings(BaseSettings):
         default=3,
         description="Number of nearest-neighbour results to fetch per query.",
     )
+    ingestion_chunk_size: int = Field(
+        default=5,
+        gt=0,
+        description="Numero di righe per chunk nel normalizer. Valori bassi (5-10) per LLM locali.",
+    )
 
     @property
     def chroma_url(self) -> str:

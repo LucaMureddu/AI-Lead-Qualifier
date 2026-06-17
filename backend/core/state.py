@@ -51,6 +51,9 @@ class LeadState(TypedDict):
     total_quote: float
     """Final summed quote computed by CalculatorNode (pure Python, no LLM)."""
 
+    on_request_services: List[str]
+    """Service names with price=0.0 (da preventivare). Excluded from total_quote."""
+
     retry_count: int
     """Number of Extractor→Mapper retry iterations performed so far."""
 

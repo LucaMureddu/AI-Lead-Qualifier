@@ -27,6 +27,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import (
+    admin_router,
     auth_router,
     ingest_router,
     profile_router,
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(ingest_router)
     app.include_router(upload_router)
     app.include_router(profile_router)
+    app.include_router(admin_router)
 
     @app.get("/health", tags=["ops"], summary="Health check")
     async def health() -> dict:

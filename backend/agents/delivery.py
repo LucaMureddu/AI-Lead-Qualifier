@@ -67,11 +67,14 @@ async def delivery_node(state: LeadState) -> Dict[str, Any]:
     adapter = get_delivery_adapter(tenant_id)
 
     # PII-safe payload: only processed/derived fields, never raw_text.
+    on_request: list = state.get("on_request_services", [])
     payload: Dict[str, Any] = {
         "lead_id": lead_id,
         "tenant_id": tenant_id,
         "total_quote": state.get("total_quote", 0.0),
+        "total_is_partial": len(on_request) > 0,
         "mapped_services": state.get("mapped_services", []),
+        "on_request_services": on_request,
     }
 
     try:

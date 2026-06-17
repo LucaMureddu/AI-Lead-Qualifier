@@ -245,6 +245,37 @@ export async function approveIngestion(threadId, decision) {
   return res.json(); // ApprovalResponse
 }
 
+/**
+ * DELETE /api/v1/tenants/{tenantId}/vector-data — cancella la collection ChromaDB del tenant.
+ *
+ * @param {string} tenantId
+ * @returns {Promise<{dropped: boolean, message: string, collection_name: string}>}
+ */
+export async function wipeVectorData(tenantId) {
+  const res = await fetch(
+    `${BASE}/api/v1/tenants/${encodeURIComponent(tenantId)}/vector-data`,
+    {
+      method: "DELETE",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ confirm_wipe: true }),
+    }
+  );
+
+  if (res.status === 401) {
+    handle401();
+    throw new Error("Sessione scaduta. Effettua nuovamente il login.");
+  }
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j && j.detail) detail = j.detail;
+    } catch { /* noop */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
 /** GET /health — true se il backend risponde 200 (endpoint pubblico, no auth). */
 export async function checkHealth() {
   try {

@@ -19,7 +19,7 @@ services:
 
   # ── ChromaDB (Database Vettoriale) ──────────────────────────────────────────
   vectordb:
-    image: chromadb/chroma:0.5.23          # versione pinned per riproducibilità
+    image: chromadb/chroma:0.5.3      # versione pinned per riproducibilità
     restart: unless-stopped
     environment:
       IS_PERSISTENT: "TRUE"                # mantiene i dati su disco

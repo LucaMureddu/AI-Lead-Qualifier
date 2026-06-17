@@ -91,20 +91,32 @@ def calculator_node(state: LeadState) -> Dict:
         }
 
     # Build a readable breakdown for the SSE stream.
-    breakdown_lines: List[str] = [
-        f"  • {entry.get('matched_name', entry.get('service', '?'))} "
-        f"→ {entry.get('price', 0.0):.2f} {entry.get('unit', '€')}"
-        for entry in mapped_services
-    ]
+    on_request: List[str] = []
+    breakdown_lines: List[str] = []
+    for entry in mapped_services:
+        name = entry.get("matched_name", entry.get("service", "?"))
+        price = float(entry.get("price", 0.0))
+        if price == 0.0:
+            breakdown_lines.append(f"  • {name} → da quotare")
+            on_request.append(name)
+        else:
+            breakdown_lines.append(
+                f"  • {name} → {price:.2f} {entry.get('unit', '€')}"
+            )
     breakdown: str = "\n".join(breakdown_lines)
 
+    partial_note = (
+        f" (PARZIALE — {len(on_request)} servizi da quotare separatamente)"
+        if on_request else ""
+    )
     log_entry: str = (
-        f"[CALCULATOR] lead_id={lead_id} | total_quote={total:.2f}€\n{breakdown}"
+        f"[CALCULATOR] lead_id={lead_id} | total_quote={total:.2f}€{partial_note}\n{breakdown}"
     )
     logger.info(log_entry)
 
     return {
         "total_quote": total,
+        "on_request_services": on_request,
         "sse_logs": [log_entry],
         "error": None,
     }

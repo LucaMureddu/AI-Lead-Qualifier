@@ -427,6 +427,31 @@ const App = {
   resetIngest() {
     store("ingest").reset();
   },
+
+  async wipeCatalogue() {
+    const tenantId =
+      Alpine.store("auth").tenantId || Alpine.store("connection").tenantId;
+
+    const confirmed = window.confirm(
+      `Sei sicuro di voler eliminare tutti i dati del catalogo per "${tenantId}"?\n\nQuesta operazione è irreversibile. Dopo il reset potrai caricare un nuovo catalogo.`
+    );
+    if (!confirmed) return;
+
+    const s = store("ingest");
+    s.phase = "uploading"; // riusa lo stato di caricamento come "in progress"
+
+    try {
+      const result = await api.wipeVectorData(tenantId);
+      s.phase = "idle";
+      const msg = result.dropped
+        ? `✓ Catalogo resettato. Puoi caricare il nuovo file.`
+        : `Nessun catalogo trovato per "${tenantId}". Puoi caricare un nuovo file.`;
+      window.alert(msg);
+    } catch (err) {
+      s.phase = "idle";
+      window.alert(`Errore durante il reset: ${err.message}`);
+    }
+  },
 };
 
 // ── Registrazione store ─────────────────────────────────────────────────────────

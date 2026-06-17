@@ -755,6 +755,100 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# ADMIN  (admin_router — prefix: /api/v1/tenants)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Operazioni amministrative/di sistema sui dati di un tenant.
+# Non coinvolgono LangGraph né LLM: pura logica CRUD su infrastruttura.
+# Il service layer (services/vector_db.py) incapsula tutta la logica ChromaDB.
+
+import asyncio as _asyncio  # noqa: E402 — import locale per non inquinare il top-level
+
+from services.vector_db import WipeResult, wipe_tenant_collection  # noqa: E402
+
+admin_router: APIRouter = APIRouter(
+    prefix="/api/v1/tenants",
+    tags=["admin"],
+)
+
+
+class WipeTenantRequest(BaseModel):
+    """Payload di conferma per la cancellazione dei dati vettoriali di un tenant."""
+
+    confirm_wipe: bool = Field(
+        ...,
+        description="Deve essere True per procedere con la cancellazione irreversibile.",
+    )
+
+
+class WipeTenantResponse(BaseModel):
+    """Risposta dell'endpoint di wipe."""
+
+    tenant_id: str
+    collection_name: str
+    dropped: bool
+    message: str
+
+
+@admin_router.delete(
+    "/{tenant_id}/vector-data",
+    response_model=WipeTenantResponse,
+    summary="Elimina tutti i dati vettoriali di un tenant (hard reset)",
+    responses={
+        200: {"description": "Operazione completata (collection droppata o già assente)."},
+        400: {"description": "confirm_wipe non impostato a True."},
+        500: {"description": "Errore interno ChromaDB."},
+    },
+)
+async def wipe_tenant_vector_data(
+    tenant_id: str,
+    body: WipeTenantRequest,
+    _: str = Depends(get_current_tenant_id),
+) -> WipeTenantResponse:
+    """
+    Hard reset dei dati vettoriali di un tenant specifico.
+
+    Elimina la collection ChromaDB ``catalogue_{tenant_id}`` in modo permanente.
+    Se la collection non esiste restituisce 200 con ``dropped=false``.
+
+    **Attenzione**: operazione irreversibile. Richiede ``confirm_wipe: true``
+    nel body per prevenire chiamate accidentali.
+    """
+    if not body.confirm_wipe:
+        raise HTTPException(
+            status_code=400,
+            detail="confirm_wipe deve essere true per procedere. Operazione annullata.",
+        )
+
+    settings = get_settings()
+
+    try:
+        result: WipeResult = await _asyncio.to_thread(
+            wipe_tenant_collection,
+            settings.chroma_host,
+            settings.chroma_port,
+            tenant_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "[admin] wipe failed | tenant=%s | error=%s",
+            tenant_id,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Errore interno durante il wipe del tenant '{tenant_id}'.",
+        ) from exc
+
+    return WipeTenantResponse(
+        tenant_id=result.tenant_id,
+        collection_name=result.collection_name,
+        dropped=result.dropped,
+        message=result.message,
+    )
+
+
 @auth_router.post(
     "/token",
     response_model=TokenResponse,

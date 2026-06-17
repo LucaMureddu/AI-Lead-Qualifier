@@ -87,7 +87,7 @@ def _query_chroma_sync(
     # chromadb.HttpClient è una factory (non una classe): niente annotazione di
     # tipo, lasciamo inferire il ClientAPI ritornato (che ha get_collection).
     client = chromadb.HttpClient(host=host, port=port)
-    collection: Collection = client.get_collection(name=collection_name)
+    collection: Collection = client.get_or_create_collection(name=collection_name)
     return collection.query(
         query_texts=query_texts,
         n_results=n_results,
