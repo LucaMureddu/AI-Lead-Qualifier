@@ -69,6 +69,7 @@ def make_lead_state() -> Callable[..., LeadState]:
             "extracted_services": [],
             "mapped_services": [],
             "total_quote": 0.0,
+            "on_request_services": [],
             "retry_count": 0,
             "sse_logs": [],
             "error": None,

@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langgraph.types import Command
 
+from core.config import get_settings
 from ingestion.graph import build_ingestion_graph, make_initial_state
 
 pytestmark = pytest.mark.integration
@@ -30,8 +31,10 @@ _FLAGGED_LLM_JSON = '[{"name": "??", "price": 0, "currency": "EUR", "confidence"
 
 
 class TestIngestionChunkLoop:
-    async def test_processes_all_chunks_then_finalizes(self, tmp_path, checkpointer) -> None:
+    async def test_processes_all_chunks_then_finalizes(self, tmp_path, checkpointer, monkeypatch) -> None:
         # 60 righe → CHUNK_SIZE=50 → 2 chunk → normalizer chiamato 2 volte.
+        monkeypatch.setenv("INGESTION_CHUNK_SIZE", "50")
+        get_settings.cache_clear()
         rows = "name,price\n" + "".join(f"S{i},{i + 1}\n" for i in range(60))
         f = tmp_path / "big.csv"
         f.write_text(rows, encoding="utf-8")

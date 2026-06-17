@@ -177,12 +177,12 @@ def test_query_chroma_sync_uses_collection() -> None:
         "ids": [["a"]], "documents": [["d"]], "metadatas": [[{}]], "distances": [[0.1]],
     }
     client = MagicMock()
-    client.get_collection.return_value = collection
+    client.get_or_create_collection.return_value = collection
     with patch("chromadb.HttpClient", return_value=client):
         res = _query_chroma_sync("localhost", 8001, "catalogue_acme", ["x"], 3)
 
     assert res["ids"] == [["a"]]
-    client.get_collection.assert_called_once_with(name="catalogue_acme")
+    client.get_or_create_collection.assert_called_once_with(name="catalogue_acme")
     collection.query.assert_called_once()
 
 

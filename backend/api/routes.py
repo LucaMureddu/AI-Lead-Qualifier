@@ -112,6 +112,7 @@ def _make_initial_state(lead_info: LeadInfo) -> LeadState:
         "extracted_services": [],
         "mapped_services": [],
         "total_quote": 0.0,
+        "on_request_services": [],
         "retry_count": 0,
         "sse_logs": [],
         "error": None,
