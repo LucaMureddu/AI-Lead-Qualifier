@@ -70,7 +70,8 @@ async function uploadAndReachReview(page) {
   await page.getByTestId("nav-ingest").click();
   await page.getByTestId("ingest-file-input").setInputFiles(CSV_FILE);
   await expect(page.getByText("Revisione necessaria")).toBeVisible();
-  await expect(page.getByText("Servizio Dubbio")).toBeVisible();
+  // exact: il nome compare anche nel <pre> dei dati grezzi (raw_data).
+  await expect(page.getByText("Servizio Dubbio", { exact: true })).toBeVisible();
 }
 
 test("upload → review → Approva e scrivi", async ({ page }) => {
