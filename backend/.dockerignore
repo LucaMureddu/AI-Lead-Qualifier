@@ -1,0 +1,29 @@
+# backend/.dockerignore
+# File esclusi dal contesto Docker per il backend.
+# Riduce la dimensione del contesto e impedisce che segreti o file
+# inutili finiscano nell'immagine.
+
+# Artefatti Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Variabili d'ambiente (MAI in produzione)
+.env
+.env.*
+
+# File di sviluppo e test
+tests/
+*.log
+
+# Database locali (vengono montati come volumi)
+data/
+uploads/
+
+# Strumenti macOS
+.DS_Store

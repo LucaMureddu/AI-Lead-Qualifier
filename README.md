@@ -184,16 +184,71 @@ Tutti gli endpoint tranne `/token` e `/health` richiedono `Authorization: Bearer
 
 ---
 
-## Deploy
+## 🐳 Deploy in Produzione (Docker)
 
-> Sezione in preparazione — pronta per accogliere i comandi Docker.
+L'intero sistema è pronto per essere eseguito in un Private Cloud o su qualsiasi server dotato di Docker, garantendo il 100% di parità di ambiente.
+
+### Prerequisiti
+
+- Docker e Docker Compose installati sul server.
+- Un file `.env` configurato nella radice del progetto (vedi `.env.example`).
+
+### Avvio del Cluster
+
+Lancia questo comando dalla radice del progetto:
 
 ```bash
-# Coming soon:
-# docker-compose up
+docker compose up --build -d
 ```
 
-I servizi da orchestrare saranno: `backend` (FastAPI), `chromadb`, `ollama`.
+Questo accenderà 3 container isolati su una rete privata interna:
+
+1. **vectordb** — il database vettoriale ChromaDB (porta non esposta all'esterno).
+2. **backend** — il motore FastAPI / LangGraph (porta non esposta all'esterno).
+3. **frontend** — un server Nginx ultra-leggero che serve la UI e fa da reverse proxy verso il backend.
+
+### Accesso
+
+Una volta avviato, l'interfaccia sarà disponibile all'indirizzo:
+
+👉 **http://localhost:8080** (o l'IP del tuo server)
+
+Il backend non è esposto direttamente: tutte le chiamate API passano in modo sicuro attraverso Nginx. Per il login, usa qualsiasi stringa come username (es. `cliente_acme_01`) — il sistema è configurato con autenticazione JWT mock; vedi `backend/api/security.py` per integrare un Identity Provider reale.
+
+### Comandi utili
+
+```bash
+# Avvia in background
+docker compose up --build -d
+
+# Visualizza i log in tempo reale
+docker compose logs -f
+
+# Ferma tutto (i dati nei volumi vengono conservati)
+docker compose down
+
+# Ferma tutto E cancella i volumi (ChromaDB, SQLite, upload)
+docker compose down -v
+```
+
+### Persistenza dei dati
+
+I dati sopravvivono ai restart grazie a tre volumi Docker gestiti automaticamente:
+
+| Volume | Contenuto |
+|--------|-----------|
+| `chroma_data` | Embedding vettoriali del catalogo (ChromaDB) |
+| `sqlite_data` | Checkpoint LangGraph (thread di qualifica e ingestion) |
+| `uploads_data` | File CSV/JSON/XLSX caricati dai tenant |
+
+### Nota per server Linux
+
+Se esegui i container su un server Linux e il tuo modello Ollama si trova sull'host (non in Docker), decommenta le righe `extra_hosts` nel `docker-compose.yml` per permettere al backend di risolvere `host.docker.internal`:
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
 
 ---
 

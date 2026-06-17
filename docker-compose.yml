@@ -1,0 +1,115 @@
+# docker-compose.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Orchestrazione dei tre container dell'AI Lead Qualifier.
+#
+# Architettura:
+#   frontend  (Nginx)    → porta 8080 esposta all'esterno
+#   backend   (FastAPI)  → raggiungibile SOLO dalla rete interna
+#   vectordb  (ChromaDB) → raggiungibile SOLO dalla rete interna
+#
+# Rete virtuale "internal": i container si parlano per nome di servizio
+#   (es. il backend chiama ChromaDB come http://vectordb:8000).
+#
+# Avvio: docker compose up --build
+# Stop:  docker compose down
+# Dati:  docker compose down -v  ← CANCELLA anche i volumi (attenzione!)
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── ChromaDB (Database Vettoriale) ──────────────────────────────────────────
+  vectordb:
+    image: chromadb/chroma:0.5.23          # versione pinned per riproducibilità
+    restart: unless-stopped
+    environment:
+      IS_PERSISTENT: "TRUE"                # mantiene i dati su disco
+      ANONYMIZED_TELEMETRY: "FALSE"        # air-gapped: nessuna telemetria
+      CHROMA_SERVER_HTTP_PORT: "8000"
+    volumes:
+      - chroma_data:/chroma/chroma          # embedding del catalogo persistiti
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend (FastAPI + LangGraph) ────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+
+    # Legge tutte le variabili da .env, poi le due sotto le sovrascrivono
+    # con i valori corretti per l'ambiente Docker.
+    env_file: .env
+    environment:
+      # ChromaDB → nome servizio interno (non localhost)
+      CHROMA_HOST: vectordb
+      CHROMA_PORT: "8000"
+
+      # Ollama gira sull'host (Mac o server GPU), non dentro Docker.
+      # host.docker.internal è l'indirizzo speciale che Docker risolve
+      # verso la macchina host su Mac/Windows. Su Linux aggiungere:
+      #   extra_hosts: ["host.docker.internal:host-gateway"]
+      LLM_BASE_URL: http://host.docker.internal:11434/v1
+
+      # Percorsi interni al container (coerenti con i VOLUME dichiarati nel Dockerfile)
+      SQLITE_DB_PATH: /app/data/checkpoints.db
+      UPLOAD_DIR: /app/uploads
+
+    volumes:
+      - uploads_data:/app/uploads           # CSV caricati dai tenant
+      - sqlite_data:/app/data               # checkpoint LangGraph (SQLite)
+
+    depends_on:
+      vectordb:
+        condition: service_healthy          # aspetta che ChromaDB sia pronto
+
+    networks:
+      - internal
+
+    # Su Linux: decommenta per risolvere host.docker.internal
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── Frontend (Nginx) ──────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:80"                           # unica porta esposta all'esterno
+
+    depends_on:
+      - backend
+
+    networks:
+      - internal
+
+# ── Volumi persistenti ────────────────────────────────────────────────────────
+# Docker gestisce questi volumi: sopravvivono ai restart e ai "docker compose down".
+# Vengono cancellati SOLO con "docker compose down -v" o "docker volume rm".
+volumes:
+  chroma_data:
+    driver: local
+  uploads_data:
+    driver: local
+  sqlite_data:
+    driver: local
+
+# ── Rete interna ──────────────────────────────────────────────────────────────
+# Bridge privato e invisibile dall'esterno.
+# backend e vectordb NON espongono porte verso l'host.
+networks:
+  internal:
+    driver: bridge

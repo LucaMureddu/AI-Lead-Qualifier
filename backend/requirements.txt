@@ -5,6 +5,7 @@ python-multipart>=0.0.9        # form data support
 
 # ── LangGraph + LangChain ─────────────────────────────────────────────────────
 langgraph>=0.2.0               # StateGraph, SqliteSaver, interrupt()
+langgraph-checkpoint-sqlite>=1.0.0  # AsyncSqliteSaver (estratto dal core in LangGraph>=0.2)
 langchain-core>=0.2.0          # base message / runnable primitives
 
 # ── LLM backends (install ONE depending on deployment) ───────────────────────

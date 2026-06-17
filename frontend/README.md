@@ -94,6 +94,11 @@ con `review_feedback` (vedi §0.2 del piano).
    footer Approva / Rifiuta / Correggi.
 3. **Impostazioni** — stato API, tenant attivo e gestione/onboarding tenant.
 
-> Onboarding di un nuovo tenant: digita l'ID nell'header (campo "Nuovo tenant"),
+> **Login tramite credenziali JWT**: inserisci un tenant ID (es. `cliente_acme_01`)
+> come username nella schermata di login — la password non è validata (mock auth).
+> Il token JWT emesso da `/token` viene conservato in `localStorage` e allegato
+> ad ogni chiamata API nell'header `Authorization: Bearer <token>`.
+>
+> Onboarding di un nuovo tenant: dopo il login, digita l'ID nell'header (campo "Nuovo tenant"),
 > premi `+`, poi carica il primo catalogo: la collezione `catalogue_<tenant>`
 > viene creata lato backend alla prima `/ingest/stream`.
