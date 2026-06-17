@@ -24,12 +24,12 @@ filterwarnings = [
 
 [tool.coverage.run]
 source = ["agents", "core", "ingestion", "adapters", "api"]
-omit = ["tests/*", "frontend/*", ".venv/*"]
+omit = ["tests/*", ".venv/*"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-exclude = [".venv", "frontend"]
+extend-exclude = [".venv"]
 
 [tool.mypy]
 python_version = "3.11"

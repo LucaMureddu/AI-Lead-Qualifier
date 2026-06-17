@@ -11,10 +11,12 @@ venv/
 # ── Environment / secrets ─────────────────────────────────────────────────────
 .env
 
-# ── Runtime data ──────────────────────────────────────────────────────────────
-uploads/
-data/checkpoints.db*
-chroma_data/
+# ── Runtime data (backend) ───────────────────────────────────────────────────
+backend/uploads/
+backend/data/checkpoints.db*
+backend/data/profiles/
+backend/chroma_data/
+backend/chroma/
 
 # ── OS / editor ───────────────────────────────────────────────────────────────
 .DS_Store
@@ -26,10 +28,6 @@ chroma_data/
 .coverage.*
 htmlcov/
 
-# ── Runtime data (aggiunte) ───────────────────────────────────────────────────
-chroma/                 # secondo store ChromaDB in root (oltre a chroma_data/)
-data/profiles/          # profili tenant generati a runtime
-
 # ── Node / frontend build ─────────────────────────────────────────────────────
 node_modules/
 dist/
@@ -40,5 +38,5 @@ playwright-report/
 blob-report/
 playwright/.cache/
 
-# NB: NON ignorare i dataset/snapshot degli evals (tests/evals/datasets, snapshots)
-# né i CSV di esempio in root: vanno versionati.
+# NB: NON ignorare i dataset/snapshot degli evals
+# (backend/tests/evals/datasets, backend/tests/evals/snapshots): vanno versionati.

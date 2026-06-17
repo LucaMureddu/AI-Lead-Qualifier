@@ -2,7 +2,7 @@
 tests/unit/test_adapters.py
 ---------------------------
 ConsoleAdapter (sempre True, nessuna rete) e factory get_delivery_adapter.
-WebhookAdapter è coperto a parte in tests/test_webhook_adapter.py.
+WebhookAdapter è coperto a parte in tests/unit/test_webhook_adapter.py.
 """
 
 from __future__ import annotations

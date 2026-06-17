@@ -1,233 +1,213 @@
 # AI Lead Qualifier
 
-> Microservizio backend B2B multi-tenant per la qualificazione automatica dei lead e la generazione di preventivi, basato su LLM eseguiti interamente in locale (on-premise / air-gapped).
+> Microservizio backend B2B multi-tenant per la qualificazione automatica dei lead e la generazione di preventivi, basato su LLM locali (on-premise / air-gapped).
 
 ---
 
-## 1. Panoramica del Progetto
+## Architettura
 
-**AI Lead Qualifier** è un servizio backend SaaS B2B che trasforma una richiesta testuale non strutturata proveniente da un potenziale cliente (lead) in un preventivo strutturato e calcolato, recapitandolo poi al sistema esterno del tenant (CRM, webhook, ecc.).
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Client / CRM                             │
+│          (HTTP JSON  ·  SSE stream  ·  Webhook)                 │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │  JWT Bearer (HS256, per-tenant)
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    FastAPI  (ASGI / Uvicorn)                     │
+│   /qualify/stream  ·  /ingest/stream  ·  /ingest/{id}/approve   │
+│   /token  ·  /health                                            │
+└──────────┬──────────────────────────────────┬───────────────────┘
+           │                                  │
+           ▼                                  ▼
+┌─────────────────────┐           ┌───────────────────────┐
+│  Qualification      │           │   Ingestion Engine    │
+│  Pipeline           │           │   (LangGraph)         │
+│  (LangGraph)        │           │                       │
+│                     │           │  chunker → normalizer │
+│  Sanitizer (PII)    │           │    → validator        │
+│  → Extractor (LLM)  │           │    → [HITL interrupt] │
+│  → Mapper (RAG)     │           │    → finalizer        │
+│  → Calculator       │           └──────────┬────────────┘
+│  → Delivery         │                      │
+└──────────┬──────────┘                      │
+           │                                 │ write
+           │  query                          ▼
+           └──────────────┐    ┌─────────────────────────┐
+                          ▼    │     ChromaDB             │
+              ┌───────────────────────────────────────┐  │
+              │  catalogue_{tenant_id}  (per tenant)  │◄─┘
+              └───────────────────────────────────────┘
 
-Il flusso end-to-end è il seguente: un lead invia del testo libero (es. il corpo di un'email o la compilazione di un form), il sistema lo ripulisce dai dati sensibili, ne estrae i servizi richiesti tramite LLM, li mappa contro il listino prezzi del tenant memorizzato su database vettoriale, calcola il totale del preventivo e infine lo consegna al sistema di destinazione.
+  Persistenza checkpoint:  SQLite  (AsyncSqliteSaver)
+  Inferenza LLM:           Ollama / LM Studio / vLLM  (OpenAI-compatible)
+```
 
-A monte di questo flusso esiste un secondo motore, l'**Ingestion Engine**, che si occupa di onboardare il catalogo servizi di ciascun tenant: legge file grezzi ed eterogenei (CSV/JSON/Excel), li normalizza in uno schema canonico tramite LLM, li valida e — quando la confidenza è bassa — sospende l'esecuzione per una revisione umana prima di scriverli su database.
+### Feature chiave
 
-### Principi cardine
+**Sicurezza JWT Multi-Tenant** — ogni richiesta porta un token JWT firmato con `JWT_SECRET_KEY`. Il claim `sub` determina il `tenant_id`, che scopa collezioni ChromaDB, upload, log e checkpoint. Zero mixing tra tenant a livello applicativo.
 
-- **100% Local AI / Air-gapped.** Tutta l'inferenza LLM avviene su un server locale OpenAI-compatibile (Ollama, LM Studio, vLLM). Non vengono importate librerie di telemetria o analytics, e tutte le chiamate di rete puntano a servizi locali (LLM, ChromaDB). Esiste un fallback opzionale verso l'API cloud Groq, da disabilitare per un deployment completamente isolato.
+**Ingestion con Human-in-the-Loop** — il grafo di ingestion si auto-sospende via `interrupt()` di LangGraph quando la confidenza media scende sotto 0.75 o almeno un item è flaggato. Il checkpoint viene persistito su SQLite; l'operatore riprende con `POST /ingest/{thread_id}/approve`.
 
-- **Multi-Tenancy logica.** L'isolamento tra i clienti è garantito a livello applicativo: ogni tenant possiede una collezione ChromaDB dedicata, denominata `catalogue_{tenant_id}`. Il `tenant_id` è presente a ogni livello dello stato (lead, item di catalogo, log) e viene propagato attraverso tutta la pipeline, scopando query, scritture su database e prefissi di log.
+**Qualifica Lead RAG con thresholding semantico** — l'Extractor identifica i servizi richiesti via LLM, il Mapper li trova nel catalogo tenant via similarità coseno su ChromaDB (soglia `MAPPER_MAX_DISTANCE`). Se il mapping fallisce, il grafo ritenta fino a `MAX_RETRY_COUNT` volte con feedback negativo nel prompt; oltre soglia, escalation a fallback umano.
 
-- **Asincronia nativa.** L'intera applicazione è costruita su uno stack async (FastAPI + `astream`/`ainvoke` di LangGraph). Le chiamate verso backend bloccanti (Groq SDK, llama-cpp-python, client sincrono di ChromaDB) non bloccano mai l'event loop: vengono offloadate a un thread pool tramite `asyncio.to_thread`, mentre il backend OpenAI-compatibile usa direttamente `httpx.AsyncClient`. La persistenza dei checkpoint LangGraph usa `AsyncSqliteSaver` (basato su `aiosqlite`), requisito necessario per i metodi async del grafo e per i workflow di interrupt/resume.
+**Delivery Layer a plugin** — il `BaseDeliveryAdapter` disaccoppia la consegna del preventivo: `ConsoleAdapter` in sviluppo, `WebhookAdapter` (httpx async, retry gestito dallo stato LangGraph) in produzione. La `factory` è il solo punto da estendere per aggiungere canali.
 
 ---
 
-## 2. Stack Tecnologico
+## Struttura del progetto
 
-| Ambito | Tecnologia |
-|---|---|
-| Web framework / API | **FastAPI** + Uvicorn (ASGI), con risposte SSE via `StreamingResponse` |
-| Orchestrazione agenti | **LangGraph** (`StateGraph`, conditional edges, `interrupt()`, `AsyncSqliteSaver`) |
-| Database vettoriale | **ChromaDB** (in modalità Client/Server tramite `chromadb.HttpClient`) |
-| Validazione & settings | **Pydantic v2** + `pydantic-settings` |
-| Inferenza LLM | **Ollama** (o qualsiasi endpoint OpenAI-compatibile: LM Studio, vLLM); fallback Groq cloud; GGUF locale via `llama-cpp-python` (legacy) |
-| HTTP client async | **httpx** |
-| Persistenza checkpoint | **SQLite** via `aiosqlite` (`AsyncSqliteSaver`) |
-| Testing & qualità | pytest, pytest-asyncio, ruff, mypy |
+```
+ai_lead_qualifier/
+├── .env.example          # template variabili d'ambiente (copia in .env)
+├── .gitignore
+├── Makefile              # comandi make: test, cov, lint, eval-*
+├── README.md
+│
+├── backend/              # tutto il codice Python
+│   ├── main.py           # entrypoint FastAPI / Uvicorn
+│   ├── api/
+│   │   ├── routes.py     # endpoint REST + SSE
+│   │   └── security.py   # JWT dependency injection
+│   ├── core/
+│   │   ├── config.py     # Settings (pydantic-settings, carica .env)
+│   │   ├── graph.py      # grafo LangGraph della qualification pipeline
+│   │   └── state.py      # LeadState TypedDict
+│   ├── agents/           # nodi del grafo di qualifica
+│   │   ├── sanitizer.py
+│   │   ├── extractor.py
+│   │   ├── mapper.py
+│   │   ├── calculator.py
+│   │   └── delivery.py
+│   ├── ingestion/        # grafo LangGraph di ingestion
+│   │   ├── graph.py
+│   │   └── models.py     # ServiceItem (schema canonico Pydantic)
+│   ├── adapters/         # delivery adapter pattern
+│   │   ├── base.py
+│   │   ├── console.py
+│   │   ├── webhook.py
+│   │   └── factory.py
+│   ├── tests/
+│   │   ├── unit/         # test puri, nessuna I/O
+│   │   ├── integration/  # grafo/API con LLM e ChromaDB mockati
+│   │   └── evals/        # piramide eval: CI (deterministico) + LIVE (LLM)
+│   ├── requirements.txt
+│   ├── requirements-dev.txt
+│   ├── requirements-ci.txt
+│   └── pyproject.toml    # configurazione pytest, coverage, ruff, mypy
+│
+└── frontend/             # UI operatore (Vite + Alpine.js + Tailwind)
+    ├── src/
+    └── ...
+```
 
 ---
 
-## 3. Architettura del Sistema (I 3 Motori)
-
-Il sistema è composto da tre macro-blocchi indipendenti ma complementari. Ognuno è implementato come un grafo LangGraph (o come livello di astrazione a sé stante) con uno stato condiviso fortemente tipizzato.
-
-### 3.1 Ingestion Engine (`ingestion/`)
-
-Responsabile dell'onboarding del listino servizi di ogni tenant. Trasforma file grezzi ed eterogenei in entry di catalogo normalizzate e validate dentro ChromaDB. È un grafo LangGraph (`ingestion/graph.py`) con cinque nodi e tre router condizionali.
-
-**Topologia:**
-
-```
-chunker → normalizer ──(loop sui chunk)──┐
-              │                          │
-              └─(tutti i chunk fatti)→ validator
-                                          │
-                            ┌─ clean ─────┴──→ finalizer → END
-                            │
-                            └─ needs review → approval (interrupt)
-                                                  │
-                                    ┌─ approved ──┴──→ finalizer → END
-                                    │
-                                    └─ rejected ──→ END
-```
-
-**Chunking.** Il `chunker_node` legge il file sorgente (formato dichiarato esplicitamente, non inferito dall'estensione) e lo suddivide in batch di righe. I lettori supportano CSV, JSON e Excel (`xlsx` via openpyxl) e vengono eseguiti in un thread (`asyncio.to_thread`). La dimensione del batch è fissata da `CHUNK_SIZE = 50`. Il `normalizer_node` processa un chunk per volta; il router `route_after_normalizer` controlla se `current_chunk_index < len(raw_chunks)` per decidere se iterare o passare alla validazione.
-
-**Normalizzazione con Pydantic.** Il cuore della normalizzazione è il modello Pydantic `ServiceItem` (`ingestion/models.py`), unità canonica verso cui ogni formato sorgente deve mappare. L'LLM riceve le righe grezze e restituisce un array JSON che viene istanziato come `ServiceItem`, beneficiando della validazione automatica: prezzi non negativi, currency normalizzata a codice ISO 4217 a 3 lettere, unit in minuscolo, `confidence` nell'intervallo `[0, 1]`. Un `model_validator` auto-flagga gli item con confidenza inferiore a 0.5. In caso di errore di costruzione, invece di scartare la riga viene creato un placeholder flaggato, così nessun dato viene perso silenziosamente. Il `validator_node` riapplica le regole di business (prezzo zero senza descrizione, nome troppo corto, unit sconosciute) e calcola la confidenza media del run.
-
-**Salvataggio isolato in ChromaDB.** Il `finalizer_node` scrive gli item nella collezione tenant-scoped `catalogue_{tenant_id}` tramite `get_or_create_collection` (con spazio metrico coseno). Il documento embeddato è la concatenazione di nome + descrizione + categoria; i campi strutturati (prezzo, currency, unit, categoria, `tenant_id`, timestamp) finiscono nei metadata; l'ID è lo UUID stabile del `ServiceItem`. Prima della scrittura viene applicata una deduplica difensiva per ID, a protezione da eventuali re-run del grafo.
-
-**Pattern Human-in-the-Loop (interrupt).** Quando la confidenza media scende sotto `CONFIDENCE_THRESHOLD = 0.75` oppure almeno un item è flaggato, il router `route_after_validator` instrada verso l'`approval_node`. Questo nodo chiama `interrupt(value=review_payload)`: LangGraph persiste il checkpoint corrente (via `AsyncSqliteSaver`) e solleva una `GraphInterrupt`, **sospendendo** il grafo senza crasharlo. Il payload di revisione (item flaggati, confidenza, conteggi, `raw_data` per la tracciabilità) viene inoltrato all'operatore umano. La ripresa avviene chiamando il grafo con `Command(resume={"approved": ..., "feedback": ...})`: il valore passato a `resume` diventa il valore di ritorno di `interrupt()`. Se approvato si procede al `finalizer`; se rifiutato si va a `END` e il chiamante può ri-triggerare la run iniettando `review_feedback` nel prompt del normalizer.
-
-### 3.2 Qualification Pipeline (`agents/` e `core/graph.py`)
-
-È il grafo principale che qualifica un singolo lead. Lo stato condiviso è `LeadState` (`core/state.py`), un `TypedDict` in cui il campo `sse_logs` usa il reducer `operator.add` per essere append-only e fan-in safe, mentre gli altri campi sono last-write-wins.
-
-**Flusso del lead:**
-
-```
-Sanitizer → Extractor ◄─────────────────────────┐
-                │                                │ retry (retry_count < max)
-            Mapper ── ok ──→ Calculator          │
-                │              │                  │
-                │          Delivery ◄─────────────┼── retry (delivery_attempts < max)
-                │              │                  │
-                │         SUCCESS → END           │
-                │                                 │
-                ├─ fail & retry_count < max ──────┘
-                └─ fail & retry_count == max → Human Fallback (interrupt) → END
-```
-
-- **Sanitizer** (`agents/sanitizer.py`) — Primo nodo obbligatorio. Maschera i dati personali (PII) nel testo grezzo via regex prima che qualsiasi dato raggiunga l'LLM o servizi esterni: carte di credito, codice fiscale italiano, SSN, email, numeri di telefono, IBAN. Il token di sostituzione è configurabile (`PII_MASK_TOKEN`, default `[REDACTED]`). Tutti i nodi a valle consumano `sanitized_text`, mai `raw_text`.
-
-- **Extractor** (`agents/extractor.py`) — Nodo async LLM-powered. Costruisce un prompt dal testo sanitizzato e lo invia al backend configurato: `openai` (nativo async via `httpx.AsyncClient`), `groq` o `llama` (bloccanti, offloadati con `asyncio.to_thread`). Restituisce un array JSON di nomi di servizio, con parsing robusto (gestisce markdown fences e JSON malformato). In un ciclo di retry, i servizi precedentemente non mappabili vengono reimmessi nel prompt come feedback negativo. Incrementa `retry_count`.
-
-- **Mapper** (`agents/mapper.py`) — Interroga ChromaDB tramite il client SDK ufficiale `chromadb.HttpClient` (modalità Client/Server, mai embedded) per la collezione `catalogue_{tenant_id}`, offloadando la chiamata bloccante con `asyncio.to_thread`. Per ogni servizio estratto seleziona il match più vicino (distanza minima) e costruisce `mapped_services` con `{service, matched_name, price, unit, distance}`. Se la collezione del tenant non esiste, restituisce un errore chiaro che invita a eseguire prima l'ingestion.
-
-- **Calculator** (`agents/calculator.py`) — Puro Python, zero LLM. Somma il campo `price` di tutte le entry mappate e scrive `total_quote`, producendo un breakdown leggibile per lo stream SSE. Deterministico, testabile e auditabile.
-
-**Routing e retry.** Il router `route_after_mapper` (`core/graph.py`) implementa la matrice decisionale: se gli item mappati sono ≥ `mapper_min_results` → Calculator; se vuoti e `retry_count < max_retry_count` → ritorno a Extractor (loop di raffinamento); se vuoti ed esauriti i retry → `human_fallback_node`, che sospende il grafo via `interrupt()` per intervento manuale. Le soglie sono lette da `Settings` e quindi tunabili via variabili d'ambiente.
-
-### 3.3 Delivery Layer (`adapters/`)
-
-Disaccoppia la logica di consegna del preventivo dal grafo tramite il **pattern Adapter**.
-
-**Pattern Adapter.** Tutti gli adapter implementano la classe astratta `BaseDeliveryAdapter` (`adapters/base.py`), il cui contratto è un metodo coroutine `deliver(payload) -> bool` (True su consegna confermata, False su fallimento recuperabile; le eccezioni di rete vengono propagate). Le implementazioni concrete sono:
-
-- **ConsoleAdapter** (`adapters/console.py`) — per sviluppo e test: logga il payload come JSON e ritorna sempre True.
-- **WebhookAdapter** (`adapters/webhook.py`) — per produzione: invia il payload in POST JSON all'URL webhook del tenant con `httpx.AsyncClient`, timeout configurabile (`delivery_timeout_seconds`). Risponde False sugli errori HTTP 4xx/5xx (retryabili) e rilancia gli errori di rete. Non logga mai il body del payload, per evitare leak di PII.
-
-**Factory.** La funzione `get_delivery_adapter(tenant_id)` (`adapters/factory.py`) risolve l'adapter corretto per il tenant. Attualmente restituisce un `ConsoleAdapter` per tutti i tenant; il punto di estensione previsto è una lookup contro un config store per-tenant (DB, secrets manager) che ritorni `WebhookAdapter` con l'URL del cliente — senza che il resto del codice cambi.
-
-**Logica di retry nello stato di LangGraph.** Il `delivery_node` (`agents/delivery.py`) incrementa `delivery_attempts` all'inizio di ogni invocazione, costruisce un payload PII-safe (mai `raw_text`) e tenta la consegna, aggiornando `delivery_status` (`PENDING`/`SUCCESS`/`FAILED`) e `delivery_error`. La decisione di ripetere è separata dal nodo: il router `route_after_delivery` (`core/graph.py`) legge stato e tentativi e applica il tetto `delivery_max_attempts` (default 3) — su `SUCCESS` → END, su `FAILED` con tentativi sotto soglia → ritorno a `delivery`, su tentativi esauriti → END con log di abbandono. Lo stato di delivery è quindi gestito interamente nello stato condiviso del grafo, separando responsabilità (nodo = tentativo, router = policy di retry).
-
----
-
-## 4. Setup e Avvio
+## Guida allo sviluppo
 
 ### Prerequisiti
 
 - Python 3.11+
-- [Ollama](https://ollama.com) (o altro server OpenAI-compatibile) con un modello scaricato
-- [ChromaDB](https://www.trychroma.com) installato come server
+- [Ollama](https://ollama.com) con un modello scaricato (es. `ollama pull llama3`)
+- [ChromaDB](https://www.trychroma.com) in modalità server
 
-### 1. Dipendenze
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 2. Configurazione
+### Setup iniziale
 
 ```bash
+# 1. Configura le variabili d'ambiente
 cp .env.example .env
-# Modifica .env con i tuoi valori (URL LLM, porta ChromaDB, ecc.)
+# Modifica .env: URL LLM, JWT_SECRET_KEY, porte, ecc.
+
+# 2. Installa le dipendenze Python
+make install          # dipendenze complete (sviluppo locale)
+# oppure:
+make install-ci       # dipendenze minime per CI (no llama-cpp/groq)
 ```
 
-### 3. Avvio dei servizi
-
-**Ollama** (modello LLM locale):
+### Avvio dei servizi
 
 ```bash
-ollama serve
-ollama pull llama3        # deve combaciare con LLM_MODEL_NAME
-```
-
-**ChromaDB** (server vettoriale, default porta 8001 come da `.env.example`):
-
-```bash
+# ChromaDB server (porta 8001, come da .env.example)
 chroma run --host localhost --port 8001
+
+# Ollama
+ollama serve
+
+# FastAPI
+cd backend && python main.py
+# Swagger UI: http://localhost:8000/docs
+# Health check: http://localhost:8000/health
 ```
 
-**FastAPI** (l'applicazione):
+### Eseguire i test
 
 ```bash
-python main.py
-# oppure, per produzione:
-# uvicorn main:app --host 0.0.0.0 --port 8000
+make test             # unit + integration + evals CI (~30s, no LLM reale)
+make cov              # stessa suite con report di copertura
+make eval-local       # evals LIVE con modello reale (richiede Ollama attivo)
+make eval-snapshot    # rigenera gli snapshot dopo modifiche a prompt/modello
+make lint             # ruff + mypy
+make check            # lint + test (gate da eseguire prima di ogni PR)
 ```
 
-L'API sarà disponibile su `http://localhost:8000` con documentazione interattiva su `/docs` (Swagger) e `/redoc`. Health check su `/health`.
+La suite si divide in tre livelli:
 
-> **Nota.** Lo script `seed_db.py` è un helper di sviluppo che popola una collezione `service_catalogue` generica; il flusso di produzione carica i cataloghi tramite l'endpoint `/ingest/stream` nelle collezioni tenant-scoped `catalogue_{tenant_id}`.
+- **Unit** (`tests/unit/`) — test puri, nessuna I/O, veloci.
+- **Integration** (`tests/integration/`) — grafo LangGraph e API con LLM e ChromaDB mockati.
+- **Evals** (`tests/evals/`) — due binari: CI (deterministico, coseno su snapshot registrati) e LIVE (giudice LLM, solo locale con `make eval-local`).
+
+Gli snapshot in `tests/evals/snapshots/` vanno versionati; rigenerarli solo dopo modifiche intenzionali a prompt o modello.
+
+### Ottenere un token JWT (sviluppo)
+
+```bash
+# Genera un token per il tenant "acme" via endpoint /token
+curl -X POST http://localhost:8000/token \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id": "acme"}'
+```
 
 ---
 
-## 5. API Endpoints Principali
+## API — Endpoint principali
 
-### `POST /ingest/stream`
+| Metodo | Path | Descrizione |
+|--------|------|-------------|
+| `POST` | `/token` | Genera un JWT per `tenant_id` (helper sviluppo) |
+| `GET`  | `/health` | Health check |
+| `POST` | `/qualify/stream` | Qualifica un lead, risposta SSE in real-time |
+| `POST` | `/qualify` | Qualifica un lead, risposta JSON sincrona |
+| `POST` | `/ingest/stream` | Carica e normalizza un catalogo, risposta SSE |
+| `POST` | `/ingest/{thread_id}/approve` | Riprende un'ingestion sospesa (HITL) |
 
-Avvia una run di ingestion del catalogo e ne trasmette il progresso via SSE. Il `thread_id` generato è esposto nell'header di risposta `X-Thread-Id` (serve per chiamare `/approve`). Se il grafo incontra item a bassa confidenza, si sospende ed emette `event: interrupt`.
-
-Payload:
-
-```json
-{
-  "tenant_id": "acme",
-  "file_path": "/uploads/acme/catalogue.csv",
-  "file_format": "csv",
-  "review_feedback": null
-}
-```
-
-Eventi SSE emessi: `log` (un frame per entry di `sse_logs`), `interrupt` (con `thread_id`, `tenant_id`, `review_payload`), `done` (riepilogo conteggi), `error`.
-
-### `POST /ingest/{thread_id}/approve`
-
-Riprende una run di ingestion sospesa all'`ApprovalNode`. Internamente esegue `graph.ainvoke(Command(resume={...}), config)` ricaricando il checkpoint identificato dal `thread_id`.
-
-Payload:
-
-```json
-{
-  "approved": true,
-  "feedback": "Prezzi corretti, procedi pure."
-}
-```
-
-Comportamento: `approved: true` → il grafo esegue il `FinalizeNode` e scrive su ChromaDB; `approved: false` → routing a `END` (il chiamante può ri-triggerare `/ingest/stream` con `review_feedback`). Restituisce `404` se non esiste un checkpoint per il `thread_id`.
-
-### `POST /qualify/stream`
-
-Qualifica un lead e trasmette gli eventi di elaborazione via SSE in tempo reale, ideale per dashboard operatore.
-
-Payload:
-
-```json
-{
-  "tenant_id": "acme",
-  "raw_text": "Salve, avremmo bisogno di sviluppare un sito web e configurare un server email.",
-  "lead_id": null
-}
-```
-
-Eventi SSE emessi: `log` (progresso per nodo), `done` (JSON finale con `total_quote` e `mapped_services`), `error`.
-
-> Esiste anche `POST /qualify` (sincrono, stessa request) che esegue l'intero grafo con `ainvoke` e restituisce un JSON `QualifyResponse` completo — pensato per webhook CRM che non consumano SSE.
+Tutti gli endpoint tranne `/token` e `/health` richiedono `Authorization: Bearer <jwt>`.
 
 ---
 
-## 6. Next Steps futuri
+## Deploy
 
-Sezione aperta per i prossimi sviluppi:
+> Sezione in preparazione — pronta per accogliere i comandi Docker.
 
-- **Frontend UI.** Costruire un'interfaccia operatore che consumi gli stream SSE (`/qualify/stream`, `/ingest/stream`), visualizzi gli item flaggati durante l'HITL e permetta approvazione/rifiuto con un click.
-- **Dockerizzazione.** `Dockerfile` + `docker-compose` per orchestrare FastAPI, ChromaDB e Ollama come stack riproducibile e isolato.
-- **Persistenza di produzione.** Migrazione da `AsyncSqliteSaver` ad `AsyncPostgresSaver` per i checkpoint (la factory `get_checkpointer` è già progettata per essere sostituita senza toccare altri moduli).
-- **Factory di delivery per-tenant.** Implementare la lookup contro un config store reale per assegnare `WebhookAdapter` con URL dedicati per tenant.
-- **Hardening sicurezza.** Restringere il CORS via env var, aggiungere autenticazione/autorizzazione per tenant, rate limiting.
-- **Osservabilità.** Metriche, tracing e dashboard sullo stato delle pipeline e sui tassi di fallback umano.
+```bash
+# Coming soon:
+# docker-compose up
 ```
 
+I servizi da orchestrare saranno: `backend` (FastAPI), `chromadb`, `ollama`.
+
+---
+
+## Stack tecnologico
+
+| Ambito | Tecnologia |
+|--------|-----------|
+| Web framework | FastAPI + Uvicorn (ASGI), SSE via `StreamingResponse` |
+| Orchestrazione agenti | LangGraph (`StateGraph`, `interrupt()`, `AsyncSqliteSaver`) |
+| Database vettoriale | ChromaDB (Client/Server, `HttpClient`) |
+| Validazione & config | Pydantic v2 + `pydantic-settings` |
+| Inferenza LLM | Ollama / LM Studio / vLLM (OpenAI-compatible); fallback Groq |
+| HTTP client async | httpx |
+| Persistenza checkpoint | SQLite via `aiosqlite` (`AsyncSqliteSaver`) |
+| Autenticazione | JWT HS256 (`PyJWT`) |
+| Testing | pytest, pytest-asyncio, ruff, mypy |
+| Frontend | Vite + Alpine.js + Tailwind CSS |
