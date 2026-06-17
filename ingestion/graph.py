@@ -594,7 +594,7 @@ def _write_to_chroma_sync(
         ids.append(item.id)
 
     if documents:
-        collection.upsert(documents=documents, metadatas=metadatas, ids=ids)
+        collection.upsert(documents=documents, metadatas=metadatas, ids=ids)  # type: ignore[arg-type]
 
     return len(documents)
 

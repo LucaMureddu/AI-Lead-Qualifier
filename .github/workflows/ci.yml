@@ -8,9 +8,7 @@ on:
 
 jobs:
   # ── Lint + type-check ───────────────────────────────────────────────────────
-  # ruff è un gate bloccante (codebase ripulito in Fase 2a). mypy è advisory
-  # (continue-on-error a livello di step) finché i type error non sono sistemati:
-  # togliere quel flag per renderlo bloccante.
+  # ruff e mypy sono entrambi gate bloccanti (codebase e tipi ripuliti).
   lint-and-type:
     runs-on: ubuntu-latest
     steps:
@@ -23,7 +21,6 @@ jobs:
       - run: pip install -r requirements-ci.txt
       - run: ruff check .
       - run: mypy core agents ingestion adapters api
-        continue-on-error: true
 
   # ── Test backend (gate bloccante) ───────────────────────────────────────────
   # Esegue unit + integration + Binario A degli evals (eval_ci, model-free).

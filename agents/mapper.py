@@ -84,7 +84,9 @@ def _query_chroma_sync(
         ChromaDB SDK result object (TypedDict) with keys
         ``ids``, ``documents``, ``metadatas``, ``distances``.
     """
-    client: chromadb.HttpClient = chromadb.HttpClient(host=host, port=port)
+    # chromadb.HttpClient è una factory (non una classe): niente annotazione di
+    # tipo, lasciamo inferire il ClientAPI ritornato (che ha get_collection).
+    client = chromadb.HttpClient(host=host, port=port)
     collection: Collection = client.get_collection(name=collection_name)
     return collection.query(
         query_texts=query_texts,
@@ -111,7 +113,7 @@ def _extract_best_match(
     Returns ``None`` if no results were found for this query.
     """
     try:
-        row_meta: List[Dict] = (result["metadatas"] or [])[query_index]
+        row_meta: List[Dict] = (result["metadatas"] or [])[query_index]  # type: ignore[assignment]
         row_docs: List[str] = (result["documents"] or [])[query_index]
         row_dist: List[float] = (result["distances"] or [])[query_index]
 

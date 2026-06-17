@@ -163,7 +163,7 @@ def _call_llama(prompt_system: str, prompt_user: str) -> str:
         temperature=settings.llm_temperature,
         max_tokens=settings.llm_max_tokens,
     )
-    return response["choices"][0]["message"]["content"]
+    return response["choices"][0]["message"]["content"]  # type: ignore[index, return-value]
 
 
 # ── Sync dispatcher for blocking backends ─────────────────────────────────────

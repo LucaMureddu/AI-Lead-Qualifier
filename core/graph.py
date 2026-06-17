@@ -138,7 +138,10 @@ def human_fallback_node(state: LeadState) -> LeadState:
 
 # ── Graph factory ─────────────────────────────────────────────────────────────
 
-def build_graph(checkpointer: AsyncSqliteSaver | None = None) -> StateGraph:
+def build_graph(checkpointer: AsyncSqliteSaver | None = None):
+    # NB: niente annotazione di ritorno esplicita: builder.compile() ritorna un
+    # CompiledStateGraph (che espone ainvoke/astream), non uno StateGraph.
+    # Lasciamo inferire mypy così i chiamanti (api/routes.py) hanno il tipo giusto.
     """
     Construct and compile the LangGraph StateGraph.
 
