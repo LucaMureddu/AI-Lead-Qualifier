@@ -184,11 +184,32 @@ class TestListCatalogueItems:
 class TestPatchCatalogueItem:
     """Tests for patch_catalogue_item handler."""
 
-    def _make_request(self, redis: AsyncMock) -> MagicMock:
-        """Build a fake FastAPI Request with redis on app.state."""
-        req = MagicMock()
-        req.app.state.redis = redis
-        return req
+    def _make_request(self, redis: AsyncMock):
+        """Build a real Starlette Request so slowapi's isinstance check passes.
+
+        slowapi's @limiter.limit decorator calls isinstance(request, Request)
+        before evaluating the limit. A plain MagicMock fails that check and
+        raises "parameter `request` must be an instance of starlette.requests.Request".
+        Constructing a real Request via a minimal ASGI scope satisfies the check
+        while still exposing app.state.redis to the handler via scope["app"].
+        """
+        from starlette.requests import Request
+
+        app = MagicMock()
+        app.state.redis = redis
+
+        async def _receive() -> dict:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        scope = {
+            "type": "http",
+            "method": "PATCH",
+            "path": "/",
+            "query_string": b"",
+            "headers": [],
+            "app": app,
+        }
+        return Request(scope, _receive)
 
     @pytest.mark.asyncio
     async def test_valid_patch_updates_db_and_enqueues_task(self) -> None:
