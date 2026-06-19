@@ -25,7 +25,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from api.dependencies import create_access_token
 from core.config import get_settings
-from core.state import LeadInfo, LeadState
+from core.state import AgentState, LeadContext
 
 
 @pytest.fixture(autouse=True)
@@ -59,20 +59,29 @@ async def checkpointer():
 
 
 @pytest.fixture
-def make_lead_state() -> Callable[..., LeadState]:
-    """Factory di LeadState valido (con tenant_id!). Override via kwargs."""
+def make_lead_state() -> Callable[..., AgentState]:
+    """Factory di AgentState valido (con tenant_id!). Override via kwargs."""
 
-    def _make(raw_text: str = "Serve un sito web e un server email.", **ovr) -> LeadState:
-        base: LeadState = {
-            "lead_info": LeadInfo(id="lead-001", raw_text=raw_text, tenant_id="acme"),
+    def _make(raw_text: str = "Serve un sito web e un server email.", **ovr) -> AgentState:
+        base: AgentState = {
+            "lead": LeadContext(
+                lead_id="lead-001",
+                tenant_id="acme",
+                raw_payload={"text": raw_text},
+            ),
+            "messages": [],
+            "retrieved_docs": [],
+            "confidence_score": 0.0,
+            "human_approved": None,
+            "review_feedback": None,
+            "status": "queued",
+            "error_detail": None,
             "sanitized_text": "",
             "extracted_services": [],
             "mapped_services": [],
             "total_quote": 0.0,
             "on_request_services": [],
             "retry_count": 0,
-            "sse_logs": [],
-            "error": None,
             "delivery_status": "PENDING",
             "delivery_attempts": 0,
             "delivery_error": None,

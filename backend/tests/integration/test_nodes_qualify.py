@@ -43,7 +43,7 @@ class TestExtractorNode:
         out = await extractor_node(make_lead_state(sanitized_text="Vorrei un sito e un audit SEO"))
         assert out["extracted_services"] == ["Web Development", "SEO Audit"]
         assert out["retry_count"] == 1
-        assert out["error"] is None
+        assert out.get("error_detail") is None
 
     async def test_parses_markdown_fenced_json(self, make_lead_state, respx_mock) -> None:
         respx_mock.post(_llm_url()).mock(return_value=_chat_response('```json\n["A", "B"]\n```'))
@@ -60,13 +60,13 @@ class TestExtractorNode:
         out = await extractor_node(make_lead_state(sanitized_text="x", retry_count=0))
         assert out["extracted_services"] == []
         assert out["retry_count"] == 1
-        assert out["error"] is not None
+        assert out.get("error_detail") is not None
 
     async def test_empty_sanitized_text_short_circuits(self, make_lead_state) -> None:
         # Nessuna chiamata LLM attesa → niente respx.
         out = await extractor_node(make_lead_state(sanitized_text=""))
         assert out["extracted_services"] == []
-        assert out["error"] is not None
+        assert out.get("error_detail") is not None
 
     async def test_retry_feeds_previous_services_into_prompt(self, make_lead_state, respx_mock) -> None:
         respx_mock.post(_llm_url()).mock(return_value=_chat_response('["Refined Service"]'))
@@ -91,7 +91,7 @@ class TestMapperNode:
         }
         with patch("agents.mapper._query_chroma_sync", return_value=fake_result):
             out = await mapper_node(make_lead_state(extracted_services=["Cloud"]))
-        assert out["error"] is None
+        assert out.get("error_detail") is None
         assert len(out["mapped_services"]) == 1
         match = out["mapped_services"][0]
         assert match["matched_name"] == "Cloud Migration"
@@ -102,18 +102,18 @@ class TestMapperNode:
         with patch("agents.mapper._query_chroma_sync", side_effect=ValueError("no collection")):
             out = await mapper_node(make_lead_state(extracted_services=["X"]))
         assert out["mapped_services"] == []
-        assert "Run /ingest/stream first" in out["error"]
+        assert "Run /ingest/stream first" in out["error_detail"]
 
     async def test_generic_error_handled(self, make_lead_state) -> None:
         with patch("agents.mapper._query_chroma_sync", side_effect=RuntimeError("boom")):
             out = await mapper_node(make_lead_state(extracted_services=["X"]))
         assert out["mapped_services"] == []
-        assert out["error"] is not None
+        assert out.get("error_detail") is not None
 
     async def test_no_extracted_services_returns_empty(self, make_lead_state) -> None:
         out = await mapper_node(make_lead_state(extracted_services=[]))
         assert out["mapped_services"] == []
-        assert "sse_logs" in out
+        assert "mapped_services" in out
 
 
 # ── Delivery (mock dell'adapter) ───────────────────────────────────────────────
@@ -165,7 +165,7 @@ async def test_mapper_no_match_when_empty_metadata(make_lead_state) -> None:
     with patch("agents.mapper._query_chroma_sync", return_value=empty):
         out = await mapper_node(make_lead_state(extracted_services=["X"]))
     assert out["mapped_services"] == []
-    assert out["error"] is None
+    assert out.get("error_detail") is None
 
 
 def test_query_chroma_sync_uses_collection() -> None:
@@ -192,7 +192,7 @@ async def test_extractor_generic_exception_handled(make_lead_state) -> None:
         out = await extractor_node(make_lead_state(sanitized_text="x", retry_count=0))
     assert out["extracted_services"] == []
     assert out["retry_count"] == 1
-    assert out["error"] is not None
+    assert out.get("error_detail") is not None
 
 
 # ── Mapper: sbarramento per distanza (mapper_max_distance) ─────────────────────
@@ -212,7 +212,7 @@ async def test_mapper_drops_match_above_distance_threshold(make_lead_state, monk
     with patch("agents.mapper._query_chroma_sync", return_value=_chroma_result(0.9)):
         out = await mapper_node(make_lead_state(extracted_services=["celle frigorifere"]))
     assert out["mapped_services"] == []   # match oltre soglia → scartato (off-target)
-    assert out["error"] is None
+    assert out.get("error_detail") is None
 
 
 async def test_mapper_keeps_match_below_distance_threshold(make_lead_state, monkeypatch) -> None:

@@ -28,8 +28,8 @@ class TestQualifyGraph:
                 {"matched_name": "Cloud Migration", "price": 3000.0, "unit": "€"},
                 {"matched_name": "SEO Audit", "price": 500.0, "unit": "€"},
             ],
-            "sse_logs": ["[MAPPER] mapped=2"],
-            "error": None,
+            "retrieved_docs": [],
+            "error_detail": None,
         })
         with patch("agents.extractor._call_openai_compatible",
                    new=AsyncMock(return_value='["Cloud Migration", "SEO Audit"]')), \
@@ -39,12 +39,12 @@ class TestQualifyGraph:
                 make_lead_state(), config={"configurable": {"thread_id": "q-happy"}}
             )
         assert final["total_quote"] == 3500.0
-        assert final["error"] is None
+        assert final.get("error_detail") is None
         assert final["delivery_status"] == "SUCCESS"   # ConsoleAdapter (no rete) conferma
 
     async def test_retry_then_human_fallback_suspends(self, make_lead_state, checkpointer) -> None:
         empty_mapper = AsyncMock(return_value={
-            "mapped_services": [], "sse_logs": ["[MAPPER] mapped=0"], "error": None,
+            "mapped_services": [], "retrieved_docs": [], "error_detail": None,
         })
         with patch("agents.extractor._call_openai_compatible",
                    new=AsyncMock(return_value='["Unknown Service XYZ"]')), \
@@ -62,7 +62,7 @@ class TestQualifyGraph:
         adapter.deliver = deliver
         mapper = AsyncMock(return_value={
             "mapped_services": [{"matched_name": "Svc", "price": 100.0, "unit": "€"}],
-            "sse_logs": ["[MAPPER] mapped=1"], "error": None,
+            "retrieved_docs": [], "error_detail": None,
         })
         with patch("agents.extractor._call_openai_compatible",
                    new=AsyncMock(return_value='["Svc"]')), \

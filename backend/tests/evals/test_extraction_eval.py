@@ -29,7 +29,7 @@ import pytest
 
 from agents.extractor import _call_openai_compatible, extractor_node
 from agents.sanitizer import sanitizer_node
-from core.state import LeadInfo
+from core.state import LeadContext
 from tests.evals.semantic import semantic_score
 
 pytestmark = pytest.mark.eval
@@ -51,14 +51,23 @@ _NON_FALLBACK = [r for r in _GOLDEN if not (r.get("expect_human_fallback") or r.
 async def _run_extractor(raw_text: str) -> List[str]:
     """Esegue sanitizer + extractor REALI (LLM vero) e ritorna i servizi estratti."""
     state: Dict[str, Any] = {
-        "lead_info": LeadInfo(id="eval-lead", raw_text=raw_text, tenant_id="eval"),
+        "lead": LeadContext(lead_id="eval-lead", tenant_id="eval", raw_payload={"text": raw_text}),
+        "messages": [],
+        "retrieved_docs": [],
+        "confidence_score": 0.0,
+        "human_approved": None,
+        "review_feedback": None,
+        "status": "queued",
+        "error_detail": None,
         "sanitized_text": "",
         "extracted_services": [],
         "mapped_services": [],
         "total_quote": 0.0,
+        "on_request_services": [],
         "retry_count": 0,
-        "sse_logs": [],
-        "error": None,
+        "delivery_status": "PENDING",
+        "delivery_attempts": 0,
+        "delivery_error": None,
     }
     state.update(sanitizer_node(state))          # maschera PII prima dell'LLM
     out = await extractor_node(state)            # chiama il VERO Ollama

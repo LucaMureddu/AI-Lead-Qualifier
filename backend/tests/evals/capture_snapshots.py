@@ -31,7 +31,7 @@ from typing import Any, Dict, List
 from agents.extractor import extractor_node
 from agents.sanitizer import sanitizer_node
 from core.config import get_settings
-from core.state import LeadInfo
+from core.state import LeadContext
 
 _HERE = Path(__file__).resolve().parent
 _GOLDEN_PATH = _HERE / "datasets" / "leads_golden.jsonl"
@@ -52,14 +52,23 @@ def _load_golden() -> List[Dict[str, Any]]:
 async def _extract(raw_text: str, lead_id: str) -> List[str]:
     """Esegue sanitizer + extractor REALI e ritorna i servizi estratti."""
     state: Dict[str, Any] = {
-        "lead_info": LeadInfo(id=lead_id, raw_text=raw_text, tenant_id="eval"),
+        "lead": LeadContext(lead_id=lead_id, tenant_id="eval", raw_payload={"text": raw_text}),
+        "messages": [],
+        "retrieved_docs": [],
+        "confidence_score": 0.0,
+        "human_approved": None,
+        "review_feedback": None,
+        "status": "queued",
+        "error_detail": None,
         "sanitized_text": "",
         "extracted_services": [],
         "mapped_services": [],
         "total_quote": 0.0,
+        "on_request_services": [],
         "retry_count": 0,
-        "sse_logs": [],
-        "error": None,
+        "delivery_status": "PENDING",
+        "delivery_attempts": 0,
+        "delivery_error": None,
     }
     state.update(sanitizer_node(state))
     out = await extractor_node(state)

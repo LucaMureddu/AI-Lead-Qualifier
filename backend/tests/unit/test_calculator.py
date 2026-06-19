@@ -44,15 +44,10 @@ class TestCalculatorNode:
         ])
         assert calculator_node(state)["total_quote"] == 2500.0
 
-    def test_sse_log_contains_total(self, make_lead_state) -> None:
-        state = make_lead_state(mapped_services=[{"matched_name": "X", "price": 99.0, "unit": "€"}])
-        result = calculator_node(state)
-        assert any("99.00" in log for log in result["sse_logs"])
-
     def test_empty_services_returns_zero(self, make_lead_state) -> None:
         assert calculator_node(make_lead_state(mapped_services=[]))["total_quote"] == 0.0
 
     def test_malformed_service_sets_error(self, make_lead_state) -> None:
         result = calculator_node(make_lead_state(mapped_services=[{"service": "X"}]))  # manca "price"
-        assert result.get("error") is not None
+        assert result.get("error_detail") is not None
         assert result["total_quote"] == 0.0

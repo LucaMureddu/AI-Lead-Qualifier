@@ -75,14 +75,9 @@ class TestSanitizerNode:
         assert "sanitized_text" in result
         assert "a@b.com" not in result["sanitized_text"]
 
-    def test_appends_sse_log(self, make_lead_state) -> None:
-        result = sanitizer_node(make_lead_state(raw_text="Nessun PII, solo una richiesta."))
-        assert len(result["sse_logs"]) >= 1
-        assert "[SANITIZER]" in result["sse_logs"][0]
-
-    def test_error_none_on_success(self, make_lead_state) -> None:
+    def test_error_detail_none_on_success(self, make_lead_state) -> None:
         result = sanitizer_node(make_lead_state(raw_text="Testo semplice."))
-        assert result.get("error") is None
+        assert result.get("error_detail") is None
 
     def test_initialises_retry_count(self, make_lead_state) -> None:
         result = sanitizer_node(make_lead_state(raw_text="Testo semplice."))

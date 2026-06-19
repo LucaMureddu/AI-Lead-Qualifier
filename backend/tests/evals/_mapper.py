@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from agents.mapper import mapper_node
-from core.state import LeadInfo
+from core.state import LeadContext
 
 # Tenant/collezione dedicati agli eval (catalogue_eval_mapper).
 SEED_TENANT = "eval_mapper"
@@ -68,14 +68,23 @@ def seed_catalog(host: str, port: int, tenant: str = SEED_TENANT, items: List[Di
 async def run_mapper(services: List[str], tenant: str = SEED_TENANT) -> List[Dict[str, Any]]:
     """Esegue mapper_node sul tenant seminato e ritorna ``mapped_services``."""
     state: Dict[str, Any] = {
-        "lead_info": LeadInfo(id="eval-map", raw_text="(eval)", tenant_id=tenant),
+        "lead": LeadContext(lead_id="eval-map", tenant_id=tenant, raw_payload={"text": "(eval)"}),
+        "messages": [],
+        "retrieved_docs": [],
+        "confidence_score": 0.0,
+        "human_approved": None,
+        "review_feedback": None,
+        "status": "queued",
+        "error_detail": None,
         "sanitized_text": "",
         "extracted_services": services,
         "mapped_services": [],
         "total_quote": 0.0,
+        "on_request_services": [],
         "retry_count": 0,
-        "sse_logs": [],
-        "error": None,
+        "delivery_status": "PENDING",
+        "delivery_attempts": 0,
+        "delivery_error": None,
     }
     out = await mapper_node(state)
     return out.get("mapped_services", [])

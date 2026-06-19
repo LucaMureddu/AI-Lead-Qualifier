@@ -17,7 +17,7 @@ _GOOD_TEXT = "Vorrei un sito web aziendale completo e un audit SEO"
 
 
 def _mapper(services: list[dict]) -> AsyncMock:
-    return AsyncMock(return_value={"mapped_services": services, "sse_logs": ["[MAPPER]"], "error": None})
+    return AsyncMock(return_value={"mapped_services": services, "retrieved_docs": [], "error_detail": None})
 
 
 async def test_health(api_client) -> None:
@@ -44,7 +44,7 @@ async def test_qualify_success_200(api_client) -> None:
     body = r.json()
     assert body["total_quote"] == 3500.0
     assert len(body["mapped_services"]) == 2
-    assert body["error"] is None
+    assert body.get("error_detail") is None
 
 
 async def test_qualify_graph_error_500(api_client) -> None:
