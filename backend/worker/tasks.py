@@ -26,12 +26,18 @@ pattern via _ingestion_graph.
 
 from __future__ import annotations
 
+import json
 from typing import Literal
 
 import structlog
 
 from core.state import AgentState, LeadContext
 from core.graph import build_graph, get_checkpointer
+
+try:
+    from database.db_core import get_pool
+except Exception:
+    get_pool = None  # type: ignore[assignment]
 
 log = structlog.get_logger()
 
@@ -188,15 +194,15 @@ async def update_embedding_task(
     If Ollama is unreachable, ``EmbeddingError`` propagates and ARQ will retry
     the job according to WorkerSettings (default: no retry, error surfaced in Redis).
     """
-    import json
-
-    from database.db_core import get_pool
     from ingestion.graph import _row_to_text
     from services.embeddings import EmbeddingError, aembed_documents
 
     log.info("embedding_update.start", item_id=item_id, tenant_id=tenant_id)
 
-    pool = await get_pool()
+    _pool_fn = get_pool
+    if _pool_fn is None:
+        from database.db_core import get_pool as _pool_fn  # type: ignore[assignment]
+    pool = await _pool_fn()
 
     # ── 1. Fetch the current (post-PATCH) record ──────────────────────────────
     row = await pool.fetchrow(
