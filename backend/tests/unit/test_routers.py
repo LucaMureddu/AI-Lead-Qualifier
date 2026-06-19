@@ -3,13 +3,18 @@ tests/unit/test_routers.py
 --------------------------
 Matrice decisionale completa dei router (funzioni pure state -> stringa).
 Coprono tutta la logica di retry/fallback/HITL senza eseguire il grafo.
+
+NOTE: TestRouteAfterMapper rimosso in V2.1.
+route_after_mapper è stata eliminata da core/graph.py perché in V2 l'edge
+mapper → evaluator è statico. Tutta la logica di retry/HITL è delegata a
+route_after_evaluator (coperta da TestRouteAfterEvaluator in test_nodes_qualify.py).
 """
 
 from __future__ import annotations
 
 import pytest
 
-from core.graph import route_after_delivery, route_after_mapper
+from core.graph import route_after_delivery
 from ingestion.graph import (
     route_after_approval,
     route_after_normalizer,
@@ -17,22 +22,6 @@ from ingestion.graph import (
 )
 
 pytestmark = pytest.mark.unit
-
-
-# ── Qualify: route_after_mapper ────────────────────────────────────────────────
-
-class TestRouteAfterMapper:
-    def test_mapped_ok_to_calculator(self, make_lead_state) -> None:
-        state = make_lead_state(mapped_services=[{"service": "X", "price": 100.0}])
-        assert route_after_mapper(state) == "calculator"
-
-    def test_empty_with_retries_left_to_extractor(self, make_lead_state) -> None:
-        state = make_lead_state(mapped_services=[], retry_count=0)
-        assert route_after_mapper(state) == "extractor"
-
-    def test_empty_retries_exhausted_to_human_fallback(self, make_lead_state) -> None:
-        state = make_lead_state(mapped_services=[], retry_count=2)  # == max_retry_count
-        assert route_after_mapper(state) == "human_fallback"
 
 
 # ── Qualify: route_after_delivery ──────────────────────────────────────────────
