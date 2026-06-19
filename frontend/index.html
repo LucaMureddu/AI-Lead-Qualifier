@@ -125,6 +125,15 @@
           </a>
           <a
             class="nav-link"
+            :class="{ 'nav-link--active': view === 'catalog' }"
+            data-testid="nav-catalog"
+            @click="view = 'catalog'; sidebarOpen = false; $store.catalog.load()"
+          >
+            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>
+            <span>Catalogo Servizi</span>
+          </a>
+          <a
+            class="nav-link"
             :class="{ 'nav-link--active': view === 'settings' }"
             data-testid="nav-settings"
             @click="view = 'settings'; sidebarOpen = false"
@@ -600,6 +609,182 @@
                 </div>
               </div>
             </section>
+
+            <!-- ════════════════════════════════════════════════════════════ -->
+            <!-- Catalogo Servizi                                              -->
+            <!-- ════════════════════════════════════════════════════════════ -->
+            <section
+              x-show="view === 'catalog'"
+              x-init="if (view === 'catalog') $store.catalog.load()"
+              class="flex flex-col gap-6"
+            >
+              <!-- Header row -->
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <h2 class="font-semibold text-slate-800 text-lg">Catalogo Servizi</h2>
+                  <p class="text-sm text-slate-500 mt-0.5">
+                    Clicca su una riga per modificare nome, prezzo o descrizione.
+                  </p>
+                </div>
+                <button
+                  class="btn-ghost !py-1.5 text-sm"
+                  :disabled="$store.catalog.loading"
+                  @click="$store.catalog.load()"
+                >
+                  <svg x-show="$store.catalog.loading" class="spinner w-4 h-4" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg>
+                  <svg x-show="!$store.catalog.loading" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+                  <span x-text="$store.catalog.loading ? 'Caricamento…' : 'Ricarica'"></span>
+                </button>
+              </div>
+
+              <!-- Error banner -->
+              <div
+                x-show="$store.catalog.error"
+                class="card !border-rose-200 !bg-rose-50 text-sm text-rose-700"
+                x-text="$store.catalog.error"
+              ></div>
+
+              <!-- Table -->
+              <div class="card !p-0 overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead>
+                    <tr class="border-b border-slate-200 bg-slate-50">
+                      <th class="text-left px-4 py-2.5 font-medium text-slate-600">Servizio</th>
+                      <th class="text-right px-4 py-2.5 font-medium text-slate-600">Prezzo (€)</th>
+                      <th class="hidden sm:table-cell text-left px-4 py-2.5 font-medium text-slate-600">Descrizione</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <template x-if="$store.catalog.items.length === 0 && !$store.catalog.loading">
+                      <tr>
+                        <td colspan="3" class="px-4 py-8 text-center text-slate-400">
+                          Nessun servizio nel catalogo. Carica un file dalla sezione "Gestione Cataloghi".
+                        </td>
+                      </tr>
+                    </template>
+                    <template x-for="item in $store.catalog.items" :key="item.id">
+                      <tr
+                        class="border-b border-slate-100 hover:bg-indigo-50 cursor-pointer transition-colors"
+                        @click="$store.catalog.openEdit(item)"
+                      >
+                        <td class="px-4 py-3 font-medium text-slate-800" x-text="item.service"></td>
+                        <td class="px-4 py-3 text-right tabular-nums text-slate-700" x-text="item.price.toLocaleString('it-IT', { minimumFractionDigits: 2 })"></td>
+                        <td class="hidden sm:table-cell px-4 py-3 text-slate-500 truncate max-w-xs" x-text="item.description || '—'"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+
+                <!-- Pagination footer -->
+                <div
+                  x-show="$store.catalog.total > 0"
+                  class="flex items-center justify-between gap-3 px-4 py-2.5 border-t border-slate-200 bg-slate-50 text-xs text-slate-500"
+                >
+                  <span>
+                    <span x-text="$store.catalog.skip + 1"></span>–<span x-text="Math.min($store.catalog.skip + $store.catalog.limit, $store.catalog.total)"></span>
+                    di <span x-text="$store.catalog.total"></span>
+                  </span>
+                  <div class="flex gap-1">
+                    <button
+                      class="btn-ghost !py-1 !px-2 text-xs disabled:opacity-40"
+                      :disabled="$store.catalog.skip === 0"
+                      @click="$store.catalog.prevPage()"
+                    >← Prec</button>
+                    <button
+                      class="btn-ghost !py-1 !px-2 text-xs disabled:opacity-40"
+                      :disabled="$store.catalog.skip + $store.catalog.limit >= $store.catalog.total"
+                      @click="$store.catalog.nextPage()"
+                    >Succ →</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- ── Edit Modal ─────────────────────────────────────────────── -->
+            <template x-teleport="body">
+              <div
+                x-show="$store.catalog.modalOpen"
+                x-transition.opacity
+                class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+                @click.self="$store.catalog.closeEdit()"
+              >
+                <div
+                  class="bg-white rounded-xl shadow-2xl w-full max-w-md flex flex-col"
+                  @click.stop
+                >
+                  <!-- Modal header -->
+                  <div class="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+                    <h3 class="font-semibold text-slate-800">Modifica servizio</h3>
+                    <button
+                      class="text-slate-400 hover:text-slate-600 transition-colors"
+                      @click="$store.catalog.closeEdit()"
+                      aria-label="Chiudi"
+                    >
+                      <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                  </div>
+
+                  <!-- Modal body -->
+                  <div class="px-5 py-4 flex flex-col gap-4">
+                    <label class="block">
+                      <span class="text-sm font-medium text-slate-700">Nome servizio</span>
+                      <input
+                        type="text"
+                        class="input-text mt-1"
+                        x-model="$store.catalog.editService"
+                        placeholder="es. Sito web vetrina"
+                      />
+                    </label>
+                    <label class="block">
+                      <span class="text-sm font-medium text-slate-700">Prezzo (€)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        class="input-text mt-1"
+                        x-model.number="$store.catalog.editPrice"
+                      />
+                      <p
+                        x-show="$store.catalog.editPrice < 0"
+                        class="text-xs text-rose-600 mt-1"
+                      >Il prezzo non può essere negativo.</p>
+                    </label>
+                    <label class="block">
+                      <span class="text-sm font-medium text-slate-700">Descrizione / Note</span>
+                      <textarea
+                        class="input-text mt-1 h-20 resize-none"
+                        x-model="$store.catalog.editDescription"
+                        placeholder="Descrizione del servizio (opzionale)"
+                      ></textarea>
+                    </label>
+
+                    <!-- Save error -->
+                    <p
+                      x-show="$store.catalog.saveError"
+                      class="text-sm text-rose-600"
+                      x-text="$store.catalog.saveError"
+                    ></p>
+                  </div>
+
+                  <!-- Modal footer -->
+                  <div class="px-5 py-4 border-t border-slate-200 flex items-center justify-end gap-3">
+                    <button
+                      class="btn-ghost"
+                      @click="$store.catalog.closeEdit()"
+                      :disabled="$store.catalog.saving"
+                    >Annulla</button>
+                    <button
+                      class="btn-primary"
+                      :disabled="$store.catalog.saving || $store.catalog.editPrice < 0 || !$store.catalog.editService.trim()"
+                      @click="$store.catalog.saveEdit()"
+                    >
+                      <svg x-show="$store.catalog.saving" class="spinner w-4 h-4" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg>
+                      <span x-text="$store.catalog.saving ? 'Salvataggio…' : 'Salva'"></span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </template>
 
             <!-- ════════════════════════════════════════════════════════════ -->
             <!-- Impostazioni                                                  -->

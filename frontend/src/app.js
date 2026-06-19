@@ -29,6 +29,7 @@ import connection from "./stores/connection.js";
 import qualify from "./stores/qualify.js";
 import ingest from "./stores/ingest.js";
 import settings from "./stores/settings.js";
+import catalog from "./stores/catalog.js";
 import {
   API_BASE_URL,
   HEALTH_POLL_MS,
@@ -437,6 +438,7 @@ Alpine.store("connection", connection);
 Alpine.store("qualify", qualify);
 Alpine.store("ingest", ingest);
 Alpine.store("settings", settings);
+Alpine.store("catalog", catalog);
 
 // ── Esposizione globale per il markup (x-on / x-effect / x-init) ────────────────
 window.Alpine = Alpine;

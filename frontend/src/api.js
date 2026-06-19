@@ -341,3 +341,38 @@ export async function saveTenantProfile(tenantId, profile) {
   }
   return res.json();
 }
+
+// ── Catalogue admin ───────────────────────────────────────────────────────────
+
+/**
+ * GET /api/catalog/items?skip=…&limit=…
+ * @returns {Promise<{items: Array, total: number, skip: number, limit: number}>}
+ */
+export async function listCatalogueItems(skip = 0, limit = 20) {
+  const url = `${BASE}/api/catalog/items?skip=${skip}&limit=${limit}`;
+  const res = await fetch(url, { cache: "no-store", headers: authHeaders() });
+  if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
+  if (!res.ok) throw new Error(`Errore caricamento catalogo: HTTP ${res.status}`);
+  return res.json();
+}
+
+/**
+ * PATCH /api/catalog/items/{item_id}
+ * @param {string} itemId
+ * @param {{ service?: string, price?: number, description?: string | null }} patch
+ * @returns {Promise<Object>} Updated item
+ */
+export async function patchCatalogueItem(itemId, patch) {
+  const res = await fetch(`${BASE}/api/catalog/items/${encodeURIComponent(itemId)}`, {
+    method: "PATCH",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(patch),
+  });
+  if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { const j = await res.json(); if (j?.detail) detail = j.detail; } catch { /* noop */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}

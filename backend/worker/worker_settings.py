@@ -57,6 +57,7 @@ from worker.tasks import (
     run_ingestion_task,
     run_qualification_task,
     run_qualification_task_resume,
+    update_embedding_task,
 )
 
 # ── Lettura parametri da env var ──────────────────────────────────────────────
@@ -121,6 +122,7 @@ class WorkerSettings:
         run_qualification_task,
         run_qualification_task_resume,
         run_ingestion_task,
+        update_embedding_task,
     ]
 
     redis_settings: RedisSettings = RedisSettings.from_dsn(get_settings().redis_dsn)

@@ -55,6 +55,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
+from api.catalogue_routes import catalogue_router
 from api.routes import (
     admin_router,
     auth_router,
@@ -185,6 +186,7 @@ def create_app() -> FastAPI:
     app.include_router(upload_router)
     app.include_router(profile_router)
     app.include_router(admin_router)
+    app.include_router(catalogue_router)
 
     @app.get("/health", tags=["ops"], summary="Health check")
     async def health(request: Request) -> JSONResponse:

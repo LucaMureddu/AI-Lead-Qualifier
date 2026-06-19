@@ -84,6 +84,7 @@ Il DB schema è versionato con Alembic. Le migration vengono applicate automatic
 |---|---|
 | `001_initial_schema` | Estensione `vector`, tabella `catalogue_items`, indice HNSW coseno |
 | `002_tenant_profiles` | Tabella `tenant_profiles` (JSONB) — sostituisce il filesystem JSON |
+| `003_audit_log` | Tabella `audit_log` — traccia ogni modifica ai campi di `catalogue_items` |
 
 **RAG Enterprise su PostgreSQL (pgvector)**
 Catalogo servizi vettorializzato con isolamento multi-tenant nativo SQL (`WHERE tenant_id = $1`). Indice HNSW per nearest-neighbour in O(log n). Dimensione vettore configurabile via `PGVECTOR_EMBEDDING_DIM`.
@@ -237,6 +238,13 @@ Tutti gli endpoint (eccetto `/health` e `/token`) richiedono `Authorization: Bea
 | `POST` | `/ingest/stream` | Avvia l'ingestion via SSE. Emette `log`, `interrupt`, `done`, `error`. |
 | `POST` | `/ingest/{thread_id}/approve` | Conferma o rifiuta l'ingestion dopo un interrupt HITL. |
 
+### Catalogue Admin
+
+| Metodo | Path | Descrizione |
+|---|---|---|
+| `GET` | `/api/catalog/items` | Lista paginata dei servizi del tenant (`?skip=0&limit=20`). |
+| `PATCH` | `/api/catalog/items/{id}` | Aggiorna nome, prezzo o descrizione di un servizio. Scrive `audit_log` e rigenera l'embedding in background via ARQ. |
+
 ### Tenant & Admin
 
 | Metodo | Path | Descrizione |
@@ -296,6 +304,7 @@ ai_lead_qualifier/
 │   │       └── 002_tenant_profiles.py  # tenant_profiles (sostituisce filesystem JSON)
 │   ├── api/
 │   │   ├── routes.py            # Endpoint REST e Dependency Injection
+│   │   ├── catalogue_routes.py  # Admin catalogo: GET /items, PATCH /items/{id}
 │   │   └── dependencies.py      # JWT RS256, get_redis(), get_graph()
 │   ├── core/
 │   │   ├── config.py            # Settings Pydantic (lru_cache singleton)
@@ -308,7 +317,7 @@ ai_lead_qualifier/
 │   │   └── profiles.py          # Profili tenant su Postgres (get_profile, upsert_profile)
 │   ├── worker/
 │   │   ├── worker_settings.py   # ARQ WorkerSettings
-│   │   └── tasks.py             # Task ARQ: qualification, resume, ingestion
+│   │   └── tasks.py             # Task ARQ: qualification, resume, ingestion, update_embedding
 │   ├── agents/                  # Nodi LangGraph (Sanitizer, Extractor, Mapper…)
 │   ├── adapters/                # Delivery adapters (Webhook, Console)
 │   ├── ingestion/               # Grafo e modelli per l'ingestion del catalogo
@@ -318,6 +327,7 @@ ai_lead_qualifier/
 │   │   └── migrate_profiles_to_db.py  # Utilità one-shot: JSON → Postgres
 │   └── tests/
 │       ├── unit/                # Logica pura, nessuna I/O
+│       │   └── test_catalogue_api.py  # Test admin catalogo + worker embedding
 │       ├── integration/         # Nodi e API con mock
 │       │   └── vector_store/    # pgvector con Testcontainers
 │       └── evals/               # LLM-as-judge + golden datasets
@@ -375,6 +385,15 @@ Per le procedure operative (backup Postgres, restore, flush coda ARQ, riavvio wo
 ---
 
 ## Changelog
+
+### V2.2 — Catalogue Admin (2026-06-19)
+
+**Nuove funzionalità**
+- **Admin catalogo (backend)**: `GET /api/catalog/items` (lista paginata) e `PATCH /api/catalog/items/{id}` (modifica parziale con validazione prezzo `ge=0` → 422, transazione atomica UPDATE + `audit_log`, dispatch ARQ)
+- **Audit log**: nuova tabella `audit_log` (migration `003`) che traccia ogni modifica campo per campo (`field_changed`, `old_value`, `new_value`, `timestamp`) — nessun record viene mai eliminato per garantire la tracciabilità
+- **Riesecuzione embedding asincrona**: `update_embedding_task` (ARQ) legge il record aggiornato, ricostruisce il testo con `_row_to_text`, ricalcola il vettore via Ollama e aggiorna `pgvector` — eventual consistency, il flusso di qualifica non è bloccato
+- **UI catalogo (frontend)**: nuova sezione "Catalogo Servizi" con tabella paginata (Alpine.js + `$store.catalog`), modal di modifica con spinner, validazione lato client e ricarica automatica post-salvataggio
+- **Test**: `test_catalogue_api.py` — 10 test unitari per validazione Pydantic, list, PATCH happy-path, 404, 422 prezzo negativo, audit no-op, worker (happy path, not found, EmbeddingError propagation)
 
 ### V2.1 — Security & Optimizations (2026-06-19)
 

@@ -161,6 +161,106 @@ async def run_qualification_task_resume(
         raise
 
 
+async def update_embedding_task(
+    ctx: dict,
+    item_id: str,
+    tenant_id: str,
+) -> dict:
+    """
+    ARQ task: regenerate the pgvector embedding for a catalogue item after a PATCH.
+
+    Flow
+    ----
+    1. Fetch the updated record from ``catalogue_items``.
+    2. Rebuild the embedding text via ``_row_to_text`` (schema-agnostic key:value
+       format, identical to what the ingestion pipeline uses at index time).
+    3. Compute a new embedding via Ollama (``aembed_documents``).
+    4. Write the new vector back to ``catalogue_items.embedding``.
+
+    Eventual consistency
+    --------------------
+    The API updates the Postgres record synchronously, then enqueues this task.
+    Between enqueue and execution the vector may be stale — this is acceptable
+    because catalogue updates are infrequent and search is eventually consistent.
+
+    Error handling
+    --------------
+    If Ollama is unreachable, ``EmbeddingError`` propagates and ARQ will retry
+    the job according to WorkerSettings (default: no retry, error surfaced in Redis).
+    """
+    import json
+
+    from database.db_core import get_pool
+    from ingestion.graph import _row_to_text
+    from services.embeddings import EmbeddingError, aembed_documents
+
+    log.info("embedding_update.start", item_id=item_id, tenant_id=tenant_id)
+
+    pool = await get_pool()
+
+    # ── 1. Fetch the current (post-PATCH) record ──────────────────────────────
+    row = await pool.fetchrow(
+        """
+        SELECT service, price, description, metadata
+        FROM   catalogue_items
+        WHERE  id = $1::uuid AND tenant_id = $2
+        """,
+        item_id,
+        tenant_id,
+    )
+    if row is None:
+        log.warning(
+            "embedding_update.item_not_found",
+            item_id=item_id,
+            tenant_id=tenant_id,
+        )
+        return {"status": "not_found", "item_id": item_id}
+
+    # ── 2. Rebuild embedding text (mirrors ingestion finalizer_node) ──────────
+    # Expand metadata fields into the top-level dict so all raw columns
+    # (including tenant-specific custom fields) are included in the vector.
+    raw_row: dict = {
+        "service": row["service"],
+        "price": str(row["price"]),
+        "description": row["description"] or "",
+        **json.loads(row["metadata"] or "{}"),
+    }
+    text: str = _row_to_text(raw_row)
+
+    # ── 3. Compute new embedding ──────────────────────────────────────────────
+    try:
+        vectors = await aembed_documents([text], tenant_id=tenant_id)
+    except EmbeddingError:
+        log.error(
+            "embedding_update.embed_failed",
+            item_id=item_id,
+            tenant_id=tenant_id,
+        )
+        raise  # let ARQ surface the error
+
+    embedding: list[float] = vectors[0]
+
+    # ── 4. Persist the new vector (only embedding column is touched) ──────────
+    await pool.execute(
+        """
+        UPDATE catalogue_items
+           SET embedding = $1::vector
+         WHERE id = $2::uuid AND tenant_id = $3
+        """,
+        json.dumps(embedding),
+        item_id,
+        tenant_id,
+    )
+
+    log.info(
+        "embedding_update.done",
+        item_id=item_id,
+        tenant_id=tenant_id,
+        dim=len(embedding),
+    )
+    return {"status": "updated", "item_id": item_id}
+
+
 async def run_ingestion_task(
     ctx: dict,
     thread_id: str,
