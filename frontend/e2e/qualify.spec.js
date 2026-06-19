@@ -1,8 +1,9 @@
 // e2e/qualify.spec.js
 // ------------------------------------------------------------------
-// Flusso "Qualifica Lead": testo → stream SSE finto → Card preventivo.
-// Il frontend consuma SSE-via-POST (fetch + ReadableStream), quindi il body
-// mockato deve simulare i frame: righe "event:"/"data:" separate da "\n\n".
+// Flusso "Qualifica Lead" — V2 polling (no SSE).
+//
+// Il frontend invia POST /lead → riceve { thread_id }, poi fa polling
+// su GET /status/{threadId} finché lo status raggiunge uno stato terminale.
 
 import { test, expect } from "@playwright/test";
 import { seedAuth } from "./helpers.js";
@@ -15,10 +16,6 @@ const PROFILE = {
   validity_days: 30,
 };
 
-function sse(...frames) {
-  return frames.map((f) => f + "\n\n").join("");
-}
-
 test.beforeEach(async ({ page }) => {
   // Autentica pre-seeding localStorage PRIMA che Alpine carichi gli store.
   await seedAuth(page);
@@ -28,15 +25,28 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("testo → preventivo con servizi mappati", async ({ page }) => {
-  await page.route("**/qualify/stream", (r) =>
+  // V2: POST /lead → 202 { thread_id }
+  await page.route("**/lead", (r) =>
     r.fulfill({
-      status: 200,
-      headers: { "content-type": "text/event-stream" },
-      body: sse(
-        "event: log\ndata: [SANITIZER] ok",
-        "event: log\ndata: [MAPPER] mapped=1",
-        'event: done\ndata: {"lead_id":"x","total_quote":2500,"mapped_services":[{"matched_name":"Sviluppo Sito","price":2500,"unit":"€","distance":0.12}]}',
-      ),
+      status: 202,
+      json: { thread_id: "test-thread-1", status: "queued" },
+    }),
+  );
+
+  // V2: GET /status/{threadId} → completed con risultato
+  await page.route("**/status/test-thread-1", (r) =>
+    r.fulfill({
+      json: {
+        thread_id: "test-thread-1",
+        status: "completed",
+        result: {
+          total_quote: 2500,
+          mapped_services: [
+            { matched_name: "Sviluppo Sito", price: 2500, unit: "€", distance: 0.12 },
+          ],
+        },
+        error_detail: null,
+      },
     }),
   );
 
@@ -45,9 +55,7 @@ test("testo → preventivo con servizi mappati", async ({ page }) => {
   await page.getByRole("button", { name: /Genera Preventivo AI/ }).click();
 
   await expect(page.getByTestId("quote-total")).toHaveText("2500.00 €");
-  // exact: il nome del servizio compare anche nell'anteprima email (<pre>).
-  await expect(page.getByText("Sviluppo Sito", { exact: true })).toBeVisible();
-  await expect(page.getByText("[MAPPER] mapped=1")).toBeVisible();
+  await expect(page.getByText("Sviluppo Sito")).toBeVisible();
   // Il badge diventa "API Connected" dopo il primo /health ok.
   await expect(page.getByText("API Connected").first()).toBeVisible();
 });
@@ -64,12 +72,24 @@ test("bottone disabilitato sotto i 10 caratteri", async ({ page }) => {
   await expect(submit).toBeEnabled();
 });
 
-test("event: error mostra il box di errore", async ({ page }) => {
-  await page.route("**/qualify/stream", (r) =>
+test("status error mostra il box di errore", async ({ page }) => {
+  // V2: POST /lead → 202 { thread_id }
+  await page.route("**/lead", (r) =>
     r.fulfill({
-      status: 200,
-      headers: { "content-type": "text/event-stream" },
-      body: sse('event: error\ndata: {"error":"Boom dal grafo"}'),
+      status: 202,
+      json: { thread_id: "test-thread-err", status: "queued" },
+    }),
+  );
+
+  // V2: GET /status/{threadId} → error con error_detail
+  await page.route("**/status/test-thread-err", (r) =>
+    r.fulfill({
+      json: {
+        thread_id: "test-thread-err",
+        status: "error",
+        result: null,
+        error_detail: "Boom dal grafo",
+      },
     }),
   );
 

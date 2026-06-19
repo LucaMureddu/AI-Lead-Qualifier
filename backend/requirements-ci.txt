@@ -55,6 +55,7 @@ sqlalchemy>=2.0.0
 psycopg2-binary>=2.9.0
 
 # ── Test ──────────────────────────────────────────────────────────────────────
+aiosqlite>=0.20.0                      # AsyncSqliteSaver (LangGraph checkpointer in-memory per test)
 pytest>=8.2.0
 pytest-asyncio>=0.23.0
 pytest-mock>=3.14.0

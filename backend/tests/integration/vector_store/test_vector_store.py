@@ -30,6 +30,7 @@ from typing import Any
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
 from database.vector_store import similarity_search, upsert_items, wipe_tenant
 from langchain_core.documents import Document
@@ -56,7 +57,7 @@ def _unit_vec(hot_index: int) -> list[float]:
 
 # ── Fixture dati ──────────────────────────────────────────────────────────────
 
-@pytest_asyncio.fixture  # type: ignore[name-defined]
+@pytest_asyncio.fixture
 async def seeded_catalogue(pg_pool: asyncpg.Pool) -> None:  # noqa: ARG001
     """
     Inserisce dati di test per entrambi i tenant.
@@ -99,10 +100,6 @@ async def seeded_catalogue(pg_pool: asyncpg.Pool) -> None:  # noqa: ARG001
         ],
         tenant_id=TENANT_B,
     )
-
-
-# ── Necessario per pytest_asyncio.fixture nei file con asyncio_mode="auto" ───
-import pytest_asyncio  # noqa: E402
 
 
 # ── Test suite ────────────────────────────────────────────────────────────────

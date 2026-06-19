@@ -46,24 +46,21 @@ Output atteso (successo)
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from pathlib import Path
 
 # Aggiunge backend/ al path per poter importare i moduli del progetto
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import asyncpg
 
 from core.config import get_settings
-from database.db_core import close_pool, get_pool
+from database.db_core import close_pool
 from database.vector_store import similarity_search, upsert_items, wipe_tenant
 from services.embeddings import (
     EmbeddingDimensionMismatchError,
     EmbeddingError,
     aembed_documents,
     aembed_query,
-    get_embeddings_service,
 )
 
 _TENANT: str = "smoke_test"

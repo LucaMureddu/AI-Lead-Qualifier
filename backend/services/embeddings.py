@@ -40,7 +40,6 @@ errati nel DB.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Optional
 
 import structlog
 from langchain_ollama import OllamaEmbeddings
