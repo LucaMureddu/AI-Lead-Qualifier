@@ -6,7 +6,7 @@ sua dipendenza esterna (LLM / ChromaDB / adapter). Nessun servizio reale.
 
 Regola d'oro (TESTING_PLAN.md §3.5): si patcha il nome DOVE È USATO.
 - extractor → ``agents.extractor._call_openai_compatible`` (httpx, via respx).
-- mapper    → ``agents.mapper._query_chroma_sync`` (chiamato in asyncio.to_thread).
+- mapper    → ``agents.mapper.aembed_query`` + ``agents.mapper.similarity_search`` (pgvector).
 - delivery  → ``agents.delivery.get_delivery_adapter`` (legato nel namespace del nodo).
 """
 
@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from langchain_core.documents import Document
 
 from agents.delivery import delivery_node
 from agents.extractor import extractor_node
@@ -79,17 +80,19 @@ class TestExtractorNode:
         assert "Old Service" in body  # il feedback negativo è nel prompt
 
 
-# ── Mapper (mock di _query_chroma_sync) ────────────────────────────────────────
+# ── Mapper (mock di aembed_query + similarity_search) ─────────────────────────
+
+_FAKE_EMBEDDING = [0.1] * 768
+
 
 class TestMapperNode:
     async def test_best_match_selected(self, make_lead_state) -> None:
-        fake_result = {
-            "ids": [["id-1"]],
-            "documents": [["Cloud Migration doc"]],
-            "metadatas": [[{"service_name": "Cloud Migration", "price": 3000.0, "unit": "€"}]],
-            "distances": [[0.12]],
-        }
-        with patch("agents.mapper._query_chroma_sync", return_value=fake_result):
+        fake_docs = [Document(
+            page_content="Cloud Migration doc",
+            metadata={"service": "Cloud Migration", "price": 3000.0, "unit": "€", "distance": 0.12},
+        )]
+        with patch("agents.mapper.aembed_query", new=AsyncMock(return_value=_FAKE_EMBEDDING)), \
+             patch("agents.mapper.similarity_search", new=AsyncMock(return_value=fake_docs)):
             out = await mapper_node(make_lead_state(extracted_services=["Cloud"]))
         assert out.get("error_detail") is None
         assert len(out["mapped_services"]) == 1
@@ -99,13 +102,15 @@ class TestMapperNode:
         assert match["distance"] == 0.12
 
     async def test_missing_collection_value_error_handled(self, make_lead_state) -> None:
-        with patch("agents.mapper._query_chroma_sync", side_effect=ValueError("no collection")):
+        with patch("agents.mapper.aembed_query", new=AsyncMock(return_value=_FAKE_EMBEDDING)), \
+             patch("agents.mapper.similarity_search", new=AsyncMock(side_effect=ValueError("no collection"))):
             out = await mapper_node(make_lead_state(extracted_services=["X"]))
         assert out["mapped_services"] == []
         assert "Run /ingest/stream first" in out["error_detail"]
 
     async def test_generic_error_handled(self, make_lead_state) -> None:
-        with patch("agents.mapper._query_chroma_sync", side_effect=RuntimeError("boom")):
+        with patch("agents.mapper.aembed_query", new=AsyncMock(return_value=_FAKE_EMBEDDING)), \
+             patch("agents.mapper.similarity_search", new=AsyncMock(side_effect=RuntimeError("boom"))):
             out = await mapper_node(make_lead_state(extracted_services=["X"]))
         assert out["mapped_services"] == []
         assert out.get("error_detail") is not None
@@ -158,32 +163,25 @@ class TestDeliveryNode:
         assert out["delivery_status"] == "FAILED"
 
 
-# ── Coverage extra: best-match assente e _query_chroma_sync mockato ────────────
+# ── Coverage extra: nessun match e similarity_search mockato ──────────────────
 
 async def test_mapper_no_match_when_empty_metadata(make_lead_state) -> None:
-    empty = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
-    with patch("agents.mapper._query_chroma_sync", return_value=empty):
+    with patch("agents.mapper.aembed_query", new=AsyncMock(return_value=_FAKE_EMBEDDING)), \
+         patch("agents.mapper.similarity_search", new=AsyncMock(return_value=[])):
         out = await mapper_node(make_lead_state(extracted_services=["X"]))
     assert out["mapped_services"] == []
     assert out.get("error_detail") is None
 
 
-def test_query_chroma_sync_uses_collection() -> None:
-    """Copre _query_chroma_sync con chromadb.HttpClient mockato (no rete)."""
-    from agents.mapper import _query_chroma_sync
-
-    collection = MagicMock()
-    collection.query.return_value = {
-        "ids": [["a"]], "documents": [["d"]], "metadatas": [[{}]], "distances": [[0.1]],
-    }
-    client = MagicMock()
-    client.get_or_create_collection.return_value = collection
-    with patch("chromadb.HttpClient", return_value=client):
-        res = _query_chroma_sync("localhost", 8001, "catalogue_acme", ["x"], 3)
-
-    assert res["ids"] == [["a"]]
-    client.get_or_create_collection.assert_called_once_with(name="catalogue_acme")
-    collection.query.assert_called_once()
+async def test_similarity_search_called_with_embedding(make_lead_state) -> None:
+    """Verifica che mapper_node chiami similarity_search con l'embedding generato."""
+    fake_embedding = [0.42] * 768
+    mock_search = AsyncMock(return_value=[])
+    with patch("agents.mapper.aembed_query", new=AsyncMock(return_value=fake_embedding)), \
+         patch("agents.mapper.similarity_search", new=mock_search):
+        await mapper_node(make_lead_state(extracted_services=["web development"]))
+    mock_search.assert_called_once()
+    assert mock_search.call_args.kwargs["query_embedding"] == fake_embedding
 
 
 async def test_extractor_generic_exception_handled(make_lead_state) -> None:
@@ -197,36 +195,41 @@ async def test_extractor_generic_exception_handled(make_lead_state) -> None:
 
 # ── Mapper: sbarramento per distanza (mapper_max_distance) ─────────────────────
 
-def _chroma_result(distance: float) -> dict:
-    return {
-        "ids": [["svc-x"]],
-        "documents": [["Doc X"]],
-        "metadatas": [[{"service_name": "X", "price": 1.0, "unit": "€"}]],
-        "distances": [[distance]],
-    }
+def _pgvector_doc(distance: float) -> list:
+    return [Document(
+        page_content="Doc X",
+        metadata={"service": "X", "price": 1.0, "unit": "€", "distance": distance},
+    )]
 
 
 async def test_mapper_drops_match_above_distance_threshold(make_lead_state, monkeypatch) -> None:
+    # Con max_distance=0.5, similarity_search filtra i match lontani → ritorna [].
     monkeypatch.setenv("MAPPER_MAX_DISTANCE", "0.5")
     get_settings.cache_clear()
-    with patch("agents.mapper._query_chroma_sync", return_value=_chroma_result(0.9)):
+    mock_search = AsyncMock(return_value=[])  # DB filtra il match off-target
+    with patch("agents.mapper.aembed_query", new=AsyncMock(return_value=_FAKE_EMBEDDING)), \
+         patch("agents.mapper.similarity_search", new=mock_search):
         out = await mapper_node(make_lead_state(extracted_services=["celle frigorifere"]))
-    assert out["mapped_services"] == []   # match oltre soglia → scartato (off-target)
-    assert out.get("error_detail") is None
+    assert out["mapped_services"] == []
+    assert mock_search.call_args.kwargs["max_distance"] == 0.5
 
 
 async def test_mapper_keeps_match_below_distance_threshold(make_lead_state, monkeypatch) -> None:
     monkeypatch.setenv("MAPPER_MAX_DISTANCE", "0.5")
     get_settings.cache_clear()
-    with patch("agents.mapper._query_chroma_sync", return_value=_chroma_result(0.3)):
+    with patch("agents.mapper.aembed_query", new=AsyncMock(return_value=_FAKE_EMBEDDING)), \
+         patch("agents.mapper.similarity_search", new=AsyncMock(return_value=_pgvector_doc(0.3))):
         out = await mapper_node(make_lead_state(extracted_services=["sito web"]))
-    assert len(out["mapped_services"]) == 1   # sotto soglia → tenuto
+    assert len(out["mapped_services"]) == 1
 
 
 async def test_mapper_threshold_disabled_keeps_far_match(make_lead_state, monkeypatch) -> None:
-    # default mapper_max_distance=0.0 → disabilitato → tiene anche un match lontano.
+    # mapper_max_distance=0.0 → disabilitato → max_distance=None passato a similarity_search.
     monkeypatch.delenv("MAPPER_MAX_DISTANCE", raising=False)
     get_settings.cache_clear()
-    with patch("agents.mapper._query_chroma_sync", return_value=_chroma_result(0.9)):
+    mock_search = AsyncMock(return_value=_pgvector_doc(0.9))
+    with patch("agents.mapper.aembed_query", new=AsyncMock(return_value=_FAKE_EMBEDDING)), \
+         patch("agents.mapper.similarity_search", new=mock_search):
         out = await mapper_node(make_lead_state(extracted_services=["x"]))
-    assert len(out["mapped_services"]) == 1   # soglia disattiva → comportamento storico
+    assert len(out["mapped_services"]) == 1
+    assert mock_search.call_args.kwargs["max_distance"] is None

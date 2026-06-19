@@ -14,6 +14,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.documents import Document
 
 from core.config import get_settings
 from core.graph import build_graph
@@ -28,7 +29,10 @@ class TestQualifyGraph:
                 {"matched_name": "Cloud Migration", "price": 3000.0, "unit": "€"},
                 {"matched_name": "SEO Audit", "price": 500.0, "unit": "€"},
             ],
-            "retrieved_docs": [],
+            "retrieved_docs": [
+                Document(page_content="d", metadata={"service": "Cloud Migration", "price": 3000.0, "distance": 0.1}),
+                Document(page_content="d", metadata={"service": "SEO Audit", "price": 500.0, "distance": 0.1}),
+            ],
             "error_detail": None,
         })
         with patch("agents.extractor._call_openai_compatible",
@@ -62,7 +66,10 @@ class TestQualifyGraph:
         adapter.deliver = deliver
         mapper = AsyncMock(return_value={
             "mapped_services": [{"matched_name": "Svc", "price": 100.0, "unit": "€"}],
-            "retrieved_docs": [], "error_detail": None,
+            "retrieved_docs": [
+                Document(page_content="d", metadata={"service": "Svc", "price": 100.0, "distance": 0.1}),
+            ],
+            "error_detail": None,
         })
         with patch("agents.extractor._call_openai_compatible",
                    new=AsyncMock(return_value='["Svc"]')), \
@@ -81,18 +88,13 @@ class TestQualifyGraph:
     ) -> None:
         # Con la soglia 0.5 attiva, un match a distanza alta (off-target) viene
         # scartato dal mapper → mapped_services vuoto → retry → human_fallback.
-        # NB: il mapper REALE gira (non lo mockiamo); mockiamo solo ChromaDB.
+        # NB: il mapper REALE gira (non lo mockiamo); mockiamo solo pgvector.
         monkeypatch.setenv("MAPPER_MAX_DISTANCE", "0.5")
         get_settings.cache_clear()
-        far_result = {
-            "ids": [["svc-x"]],
-            "documents": [["Servizio X"]],
-            "metadatas": [[{"service_name": "Servizio X", "price": 100.0, "unit": "€"}]],
-            "distances": [[0.95]],  # off-target: oltre 0.5
-        }
         with patch("agents.extractor._call_openai_compatible",
                    new=AsyncMock(return_value='["celle frigorifere"]')), \
-             patch("agents.mapper._query_chroma_sync", return_value=far_result):
+             patch("agents.mapper.aembed_query", new=AsyncMock(return_value=[0.1] * 768)), \
+             patch("agents.mapper.similarity_search", new=AsyncMock(return_value=[])):
             graph = build_graph(checkpointer=checkpointer)
             config = {"configurable": {"thread_id": "q-offtarget"}}
             final = await graph.ainvoke(make_lead_state(), config=config)

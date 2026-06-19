@@ -82,7 +82,7 @@ async def test_ingest_stream_clean_emits_done(api_client, tmp_path) -> None:
         '"currency": "EUR", "confidence": 0.95}]'
     )
     with patch("agents.extractor._call_openai_compatible", new=AsyncMock(return_value=clean)), \
-         patch("ingestion.graph._write_to_chroma_sync", MagicMock(return_value=1)):
+         patch("ingestion.graph._write_to_pgvector", AsyncMock(return_value=1)):
         r = await api_client.post("/ingest/stream", json={
             "file_path": str(f), "file_format": "csv",
         })

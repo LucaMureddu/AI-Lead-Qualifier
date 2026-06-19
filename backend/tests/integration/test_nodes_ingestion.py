@@ -5,7 +5,7 @@ Test dei singoli nodi del grafo di ingestion, isolati con mock mirati.
 - chunker   → legge file reali da tmp_path (CSV/JSON), nessuna rete.
 - normalizer→ ``agents.extractor._call_openai_compatible`` (import locale nel nodo).
 - validator → puro, nessun mock.
-- finalizer → ``ingestion.graph._write_to_chroma_sync`` (chiamato in asyncio.to_thread).
+- finalizer → ``ingestion.graph._write_to_pgvector`` (coroutine asincrona).
 """
 
 from __future__ import annotations
@@ -147,30 +147,30 @@ class TestValidatorNode:
         assert out["confidence_score"] == 0.95
 
 
-# ── Finalizer (mock di _write_to_chroma_sync) ──────────────────────────────────
+# ── Finalizer (mock di _write_to_pgvector) ─────────────────────────────────────
 
 class TestFinalizerNode:
     async def test_dedup_by_id(self) -> None:
         a1 = ServiceItem(id="A", tenant_id="acme", name="S1", price=10.0, confidence=0.9)
         a2 = ServiceItem(id="A", tenant_id="acme", name="S1-dup", price=10.0, confidence=0.9)
         b = ServiceItem(id="B", tenant_id="acme", name="S2", price=20.0, confidence=0.9)
-        writer = MagicMock(return_value=2)
-        with patch("ingestion.graph._write_to_chroma_sync", writer):
+        writer = AsyncMock(return_value=2)
+        with patch("ingestion.graph._write_to_pgvector", writer):
             out = await finalizer_node(_ing_state(normalized_items=[a1, a2, b], approved=True))
         assert out["error"] is None
-        written_items = writer.call_args.args[3]  # (host, port, tenant_id, items)
+        written_items = writer.call_args.args[1]  # (tenant_id, items)
         assert {i.id for i in written_items} == {"A", "B"}
         assert len(written_items) == 2
 
     async def test_write_error_sets_error(self) -> None:
         item = ServiceItem(id="A", tenant_id="acme", name="S1", price=10.0, confidence=0.9)
-        with patch("ingestion.graph._write_to_chroma_sync", MagicMock(side_effect=RuntimeError("boom"))):
+        with patch("ingestion.graph._write_to_pgvector", AsyncMock(side_effect=RuntimeError("boom"))):
             out = await finalizer_node(_ing_state(normalized_items=[item]))
         assert out["error"] is not None
 
     async def test_success_logs_written(self) -> None:
         item = ServiceItem(id="A", tenant_id="acme", name="S1", price=10.0, confidence=0.9)
-        with patch("ingestion.graph._write_to_chroma_sync", MagicMock(return_value=1)):
+        with patch("ingestion.graph._write_to_pgvector", AsyncMock(return_value=1)):
             out = await finalizer_node(_ing_state(normalized_items=[item]))
         assert out["error"] is None
         assert any("FINALIZER" in log for log in out["sse_logs"])
@@ -210,21 +210,20 @@ async def test_normalizer_injects_review_feedback() -> None:
     assert out["error"] is None
 
 
-def test_write_to_chroma_sync_builds_and_upserts() -> None:
-    """Copre _write_to_chroma_sync con chromadb.HttpClient mockato (no rete)."""
-    from ingestion.graph import _write_to_chroma_sync
+async def test_write_to_pgvector_embeds_and_upserts() -> None:
+    """Verifica che _write_to_pgvector generi embedding e chiami upsert_items."""
+    from ingestion.graph import _write_to_pgvector
 
     item = ServiceItem(
         id="A", tenant_id="acme", name="S1", description="d", category="cat",
         price=10.0, unit="hour", confidence=0.9,
     )
-    collection = MagicMock()
-    client = MagicMock()
-    client.get_or_create_collection.return_value = collection
-    with patch("chromadb.HttpClient", return_value=client):
-        written = _write_to_chroma_sync("localhost", 8001, "acme", [item])
+    fake_embeddings = [[0.1] * 768]
+    mock_upsert = AsyncMock()
+    with patch("services.embeddings.aembed_documents", new=AsyncMock(return_value=fake_embeddings)), \
+         patch("database.vector_store.upsert_items", new=mock_upsert):
+        written = await _write_to_pgvector("acme", [item])
 
     assert written == 1
-    client.get_or_create_collection.assert_called_once()
-    collection.upsert.assert_called_once()
+    mock_upsert.assert_called_once()
     assert collection.upsert.call_args.kwargs["ids"] == ["A"]

@@ -98,6 +98,21 @@ async def mapper_node(state: AgentState) -> Dict:
                     else None
                 ),
             )
+        except ValueError as exc:
+            log.warning(
+                "mapper.collection_missing",
+                lead_id=lead_id,
+                tenant_id=tenant_id,
+                error=str(exc),
+            )
+            return {
+                "mapped_services": [],
+                "retrieved_docs": [],
+                "error_detail": (
+                    f"Nessun catalogo trovato per tenant='{tenant_id}'. "
+                    f"Run /ingest/stream first. [{exc}]"
+                ),
+            }
         except Exception as exc:
             log.exception(
                 "mapper.query_error",

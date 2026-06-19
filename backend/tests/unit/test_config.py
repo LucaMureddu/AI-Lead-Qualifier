@@ -24,10 +24,5 @@ def test_valid_providers_accepted() -> None:
         assert Settings(llm_provider=provider).llm_provider == provider
 
 
-def test_chroma_url_property() -> None:
-    s = get_settings()
-    assert s.chroma_url == f"http://{s.chroma_host}:{s.chroma_port}"
-
-
 def test_get_settings_is_cached() -> None:
     assert get_settings() is get_settings()

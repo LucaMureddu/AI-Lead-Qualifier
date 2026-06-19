@@ -3,7 +3,7 @@ tests/integration/test_graph_ingestion.py
 ------------------------------------------
 Grafo di ingestion eseguito per intero con confini esterni mockati:
 - LLM del normalizer → ``agents.extractor._call_openai_compatible``
-- scrittura ChromaDB → ``ingestion.graph._write_to_chroma_sync``
+- scrittura pgvector → ``ingestion.graph._write_to_pgvector``
 
 Copre: loop sui chunk, routing ad approval su catalogo problematico (HITL),
 e resume con ``Command(resume={...})`` sia approvato che rifiutato.
@@ -44,9 +44,9 @@ class TestIngestionChunkLoop:
             '"currency": "EUR", "confidence": 0.95}]'
         )
         llm = AsyncMock(return_value=clean_item)
-        writer = MagicMock(return_value=2)
+        writer = AsyncMock(return_value=2)
         with patch("agents.extractor._call_openai_compatible", new=llm), \
-             patch("ingestion.graph._write_to_chroma_sync", writer):
+             patch("ingestion.graph._write_to_pgvector", writer):
             graph = build_ingestion_graph(checkpointer)
             state = make_initial_state(tenant_id="acme", source_file=str(f), file_format="csv")
             final = await graph.ainvoke(state, config={"configurable": {"thread_id": "ing-loop"}})
@@ -73,9 +73,9 @@ class TestIngestionApprovalHITL:
 
     async def test_resume_approved_runs_finalizer(self, checkpointer) -> None:
         llm = AsyncMock(return_value=_FLAGGED_LLM_JSON)
-        writer = MagicMock(return_value=1)
+        writer = AsyncMock(return_value=1)
         with patch("agents.extractor._call_openai_compatible", new=llm), \
-             patch("ingestion.graph._write_to_chroma_sync", writer):
+             patch("ingestion.graph._write_to_pgvector", writer):
             graph = build_ingestion_graph(checkpointer)
             config = {"configurable": {"thread_id": "ing-resume-ok"}}
             state = make_initial_state(
@@ -90,9 +90,9 @@ class TestIngestionApprovalHITL:
 
     async def test_resume_rejected_skips_finalizer(self, checkpointer) -> None:
         llm = AsyncMock(return_value=_FLAGGED_LLM_JSON)
-        writer = MagicMock(return_value=1)
+        writer = AsyncMock(return_value=1)
         with patch("agents.extractor._call_openai_compatible", new=llm), \
-             patch("ingestion.graph._write_to_chroma_sync", writer):
+             patch("ingestion.graph._write_to_pgvector", writer):
             graph = build_ingestion_graph(checkpointer)
             config = {"configurable": {"thread_id": "ing-resume-no"}}
             state = make_initial_state(
