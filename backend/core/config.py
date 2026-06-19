@@ -202,14 +202,13 @@ class Settings(BaseSettings):
     )
 
     # ── Tenant profile ────────────────────────────────────────────────────────
-    profiles_dir: Path = Field(
-        default=Path("data/profiles"),
-        description="Directory where per-tenant company profiles are stored as JSON.",
-    )
+    # profiles_dir removed in V2.1: profiles are now stored in Postgres
+    # (tenant_profiles table, migration 002_tenant_profiles). Filesystem JSON
+    # files in data/profiles/ are no longer read or written.
     profile_max_bytes: int = Field(
         default=2 * 1024 * 1024,
         gt=0,
-        description="Maximum serialized size (bytes) of a tenant profile.",
+        description="Maximum serialized size (bytes) of a tenant profile (enforced before DB write).",
     )
 
     @field_validator("llm_provider")

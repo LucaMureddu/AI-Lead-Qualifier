@@ -37,7 +37,7 @@ import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 from arq.connections import RedisSettings, create_pool as arq_create_pool
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -148,25 +148,47 @@ def create_app() -> FastAPI:
     app.include_router(admin_router)
 
     @app.get("/health", tags=["ops"], summary="Health check")
-    async def health() -> JSONResponse:
-        """Verifies Postgres connectivity. Returns 503 if the pool is unavailable."""
+    async def health(request: Request) -> JSONResponse:
+        """
+        Verifies connectivity to Postgres and Redis.
+
+        Returns 503 if either dependency is unavailable. Redis is required for
+        ARQ job enqueueing — if it is down, POST /lead accepts requests but
+        cannot process them, so we must surface the failure here.
+        """
+        checks: dict = {}
+        failed: bool = False
+
+        # ── Postgres ──────────────────────────────────────────────────────────
         try:
             pool = await get_pool()
             await pool.fetchval("SELECT 1")
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "status": "ok",
-                    "service": "ai_lead_qualifier",
-                    "version": settings.app_version,
-                },
-            )
+            checks["postgres"] = "ok"
         except Exception as exc:
-            log.error("health.check_failed", error=str(exc))
-            return JSONResponse(
-                status_code=503,
-                content={"status": "error", "detail": str(exc)},
-            )
+            log.error("health.postgres_failed", error=str(exc))
+            checks["postgres"] = f"error: {exc}"
+            failed = True
+
+        # ── Redis (ARQ) ───────────────────────────────────────────────────────
+        try:
+            redis = request.app.state.redis
+            await redis.ping()
+            checks["redis"] = "ok"
+        except Exception as exc:
+            log.error("health.redis_failed", error=str(exc))
+            checks["redis"] = f"error: {exc}"
+            failed = True
+
+        status_code = 503 if failed else 200
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "status": "error" if failed else "ok",
+                "service": "ai_lead_qualifier",
+                "version": settings.app_version,
+                "checks": checks,
+            },
+        )
 
     return app
 

@@ -138,36 +138,12 @@ def route_after_delivery(state: AgentState) -> Literal["delivery", "__end__"]:
     return "__end__"
 
 
-def route_after_mapper(
-    state: AgentState,
-) -> Literal["calculator", "extractor", "human_fallback"]:
-    """
-    Conditional edge executed after MapperNode.
-
-    Decision matrix:
-    ┌──────────────────────────────────────┬────────────────────────────┐
-    │ mapped_services not empty            │ → CalculatorNode           │
-    │ empty & retry_count < max            │ → ExtractorNode (retry)    │
-    │ empty & retry_count == max           │ → human_fallback (HITL)    │
-    └──────────────────────────────────────┴────────────────────────────┘
-    """
-    settings = get_settings()
-    mapped_services: list = state.get("mapped_services", [])
-    retry: int = state.get("retry_count", 0)
-
-    if mapped_services:
-        log.debug("route.mapper", next="calculator", services=len(mapped_services))
-        return "calculator"
-
-    if retry < settings.max_retry_count:
-        log.debug("route.mapper", next="extractor", retry=retry)
-        return "extractor"
-
-    log.warning("route.mapper", next="human_fallback", retries=retry)
-    return "human_fallback"
-
-
 # ── HITL interrupt node ───────────────────────────────────────────────────────
+# NOTE: route_after_mapper was removed in V2. The mapper edge is now static
+# (mapper → evaluator). Routing decisions (retry / HITL) are made by
+# route_after_evaluator after the confidence score is computed, which gives
+# a better signal than checking mapped_services count alone. The old
+# human_fallback node name was also replaced by hitl_interrupt.
 
 
 def hitl_interrupt_node(state: AgentState) -> dict:

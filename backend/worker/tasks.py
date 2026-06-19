@@ -13,6 +13,15 @@ Tasks
 run_qualification_task        — execute the full qualification graph
 run_qualification_task_resume — resume a HITL-interrupted graph after approval
 run_ingestion_task            — run the catalogue ingestion graph
+
+Graph singleton
+---------------
+The compiled qualification graph is built once per worker process and stored
+in _qualification_graph. ARQ workers are long-lived processes, so rebuilding
+the StateGraph on every job is wasteful — compilation traverses the graph
+topology and wires up all conditional edges. The checkpointer is shared via
+get_checkpointer() (already a singleton). The ingestion graph follows the same
+pattern via _ingestion_graph.
 """
 
 from __future__ import annotations
@@ -26,6 +35,36 @@ from core.graph import build_graph, get_checkpointer
 
 log = structlog.get_logger()
 
+# ── Graph singletons ──────────────────────────────────────────────────────────
+# Initialised lazily on the first task invocation. The worker process is
+# long-lived, so these are compiled exactly once per process lifetime.
+
+_qualification_graph = None
+_ingestion_graph = None
+
+
+async def _get_qualification_graph():
+    """Return the worker-process-scoped compiled qualification graph."""
+    global _qualification_graph
+    if _qualification_graph is None:
+        checkpointer = await get_checkpointer()
+        _qualification_graph = build_graph(checkpointer=checkpointer)
+        log.info("worker.qualification_graph_compiled")
+    return _qualification_graph
+
+
+async def _get_ingestion_graph():
+    """Return the worker-process-scoped compiled ingestion graph."""
+    global _ingestion_graph
+    if _ingestion_graph is None:
+        from ingestion.graph import build_ingestion_graph
+        checkpointer = await get_checkpointer()
+        _ingestion_graph = build_ingestion_graph(checkpointer)
+        log.info("worker.ingestion_graph_compiled")
+    return _ingestion_graph
+
+
+# ── Tasks ─────────────────────────────────────────────────────────────────────
 
 async def run_qualification_task(
     ctx: dict,
@@ -43,8 +82,7 @@ async def run_qualification_task(
     lead = LeadContext(**lead_context_dict)
     log.info("qualification.start", thread_id=thread_id, tenant_id=tenant_id)
 
-    checkpointer = await get_checkpointer()
-    graph = build_graph(checkpointer=checkpointer)
+    graph = await _get_qualification_graph()
     config = {"configurable": {"thread_id": thread_id}}
 
     initial_state: AgentState = {
@@ -96,8 +134,7 @@ async def run_qualification_task_resume(
 
     log.info("qualification.resume", thread_id=thread_id, tenant_id=tenant_id)
 
-    checkpointer = await get_checkpointer()
-    graph = build_graph(checkpointer=checkpointer)
+    graph = await _get_qualification_graph()
     config = {"configurable": {"thread_id": thread_id}}
 
     try:
@@ -131,7 +168,7 @@ async def run_ingestion_task(
     If it reaches ApprovalNode, it suspends and sets status='pending_review'.
     The operator uses /ingest/{thread_id}/approve to resume.
     """
-    from ingestion.graph import build_ingestion_graph, make_initial_state
+    from ingestion.graph import make_initial_state
 
     log.info(
         "ingestion.start",
@@ -140,8 +177,7 @@ async def run_ingestion_task(
         file=file_path,
     )
 
-    checkpointer = await get_checkpointer()
-    graph = build_ingestion_graph(checkpointer)
+    graph = await _get_ingestion_graph()
     initial_state = make_initial_state(tenant_id, file_path, file_format, review_feedback)
     config = {"configurable": {"thread_id": thread_id}}
 

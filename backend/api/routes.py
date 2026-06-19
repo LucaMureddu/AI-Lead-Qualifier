@@ -50,6 +50,7 @@ from pydantic import BaseModel, Field
 from api.dependencies import create_access_token, get_current_tenant_id
 from core.config import get_settings
 from core.state import AgentState, LeadContext
+from database.profiles import get_profile, upsert_profile
 from database.vector_store import wipe_tenant
 from ingestion.graph import make_initial_state
 
@@ -527,25 +528,21 @@ class TenantProfile(BaseModel):
     logo_data_url: str = ""
 
 
-def _profile_path(safe_tenant: str) -> Path:
-    return (get_settings().profiles_dir / f"{safe_tenant}.json").resolve()
-
-
 @profile_router.get("/tenants/{tenant_id}/profile", response_model=TenantProfile)
 async def get_tenant_profile(
     tenant_id: str,
     _jwt_tenant: str = Depends(get_current_tenant_id),
 ) -> TenantProfile:
+    """Return the tenant profile from Postgres. Returns an empty default if not found."""
     safe: str = _safe_tenant_dirname(tenant_id)
-    path: Path = _profile_path(safe)
-    if path.exists():
-        try:
-            data: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail="Profilo illeggibile.") from exc
-        data["tenant_id"] = safe
-        return TenantProfile(**data)
-    return TenantProfile(tenant_id=safe)
+    try:
+        data: Dict[str, Any] | None = await get_profile(safe)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Errore lettura profilo.") from exc
+    if data is None:
+        return TenantProfile(tenant_id=safe)
+    data["tenant_id"] = safe
+    return TenantProfile(**data)
 
 
 @profile_router.put("/tenants/{tenant_id}/profile", response_model=TenantProfile)
@@ -554,6 +551,7 @@ async def put_tenant_profile(
     body: TenantProfile,
     _jwt_tenant: str = Depends(get_current_tenant_id),
 ) -> TenantProfile:
+    """Upsert the tenant profile in Postgres."""
     settings = get_settings()
     safe: str = _safe_tenant_dirname(tenant_id)
     body.tenant_id = safe
@@ -566,9 +564,8 @@ async def put_tenant_profile(
         raise HTTPException(status_code=413, detail="Profilo troppo grande.")
 
     try:
-        settings.profiles_dir.mkdir(parents=True, exist_ok=True)
-        _profile_path(safe).write_text(raw, encoding="utf-8")
-    except OSError as exc:
+        await upsert_profile(safe, body.model_dump())
+    except Exception as exc:
         raise HTTPException(status_code=500, detail="Impossibile salvare il profilo.") from exc
 
     return body
@@ -624,8 +621,13 @@ class WipeTenantResponse(BaseModel):
 async def wipe_tenant_vector_data(
     tenant_id: str,
     body: WipeTenantRequest,
-    _: str = Depends(get_current_tenant_id),
+    jwt_tenant: str = Depends(get_current_tenant_id),
 ) -> WipeTenantResponse:
+    # Security: verify the caller owns the tenant they're trying to wipe.
+    # Without this check, any authenticated tenant could wipe another tenant's data
+    # by supplying an arbitrary tenant_id in the URL path (IDOR vulnerability).
+    if jwt_tenant != tenant_id:
+        raise HTTPException(status_code=403, detail="Accesso negato.")
     if not body.confirm_wipe:
         raise HTTPException(
             status_code=400,
