@@ -23,7 +23,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from api.security import create_access_token
+from api.dependencies import create_access_token
 from core.config import get_settings
 from core.state import LeadInfo, LeadState
 
