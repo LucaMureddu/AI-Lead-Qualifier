@@ -271,7 +271,7 @@ async def run_ingestion_task(
     ctx: dict,
     thread_id: str,
     tenant_id: str,
-    file_path: str,
+    object_key: str,
     file_format: Literal["csv", "json", "xlsx"],
     review_feedback: str | None = None,
 ) -> dict:
@@ -281,6 +281,10 @@ async def run_ingestion_task(
     The ingestion graph uses the same AsyncPostgresSaver checkpointer.
     If it reaches ApprovalNode, it suspends and sets status='pending_review'.
     The operator uses /ingest/{thread_id}/approve to resume.
+
+    V2.1: ``object_key`` (S3 Object Key) replaces the old ``file_path``
+    (absolute filesystem path). ``make_initial_state`` is responsible for
+    downloading the file from S3 before processing.
     """
     from ingestion.graph import make_initial_state
 
@@ -288,11 +292,11 @@ async def run_ingestion_task(
         "ingestion.start",
         thread_id=thread_id,
         tenant_id=tenant_id,
-        file=file_path,
+        object_key=object_key,
     )
 
     graph = await _get_ingestion_graph()
-    initial_state = make_initial_state(tenant_id, file_path, file_format, review_feedback)
+    initial_state = make_initial_state(tenant_id, object_key, file_format, review_feedback)
     config = {"configurable": {"thread_id": thread_id}}
 
     try:

@@ -143,7 +143,14 @@ async def extractor_node(state: AgentState) -> Dict:
     LangGraph node: extract service names from sanitized_text via LLM.
 
     Reads: state["lead"].lead_id, state["sanitized_text"], state["retry_count"]
-    Writes: extracted_services, retry_count, (on error) error_detail
+    Writes: extracted_services, retry_count, (on parse failure) error_detail
+
+    Error handling
+    --------------
+    - Network / connection / HTTP errors  → raise RuntimeError (ARQ retries the job,
+      LangGraph state is NOT touched, retry_count is NOT consumed).
+    - LLM responds but output unparseable → return state with retry_count + 1
+      (logical failure, graph retries or escalates to HITL).
     """
     settings = get_settings()
     lead_id: str = state["lead"].lead_id
@@ -169,6 +176,15 @@ async def extractor_node(state: AgentState) -> Dict:
         retry=retry_count,
     )
 
+    # ── Call LLM ──────────────────────────────────────────────────────────────
+    # Network / connection / HTTP errors are NOT logical failures of the graph:
+    # they are infrastructure failures. We raise RuntimeError so ARQ fails the
+    # job and retries it natively — without touching LangGraph state and without
+    # consuming a retry_count slot.
+    #
+    # Only a *successful* LLM response that produces unusable output (empty
+    # array, malformed JSON) is a logical failure that increments retry_count
+    # and may eventually escalate to HITL.
     try:
         if settings.llm_provider == "openai":
             raw_response: str = await _call_openai_compatible(_SYSTEM_PROMPT, user_prompt)
@@ -176,21 +192,30 @@ async def extractor_node(state: AgentState) -> Dict:
             raw_response = await asyncio.to_thread(
                 _invoke_llm_blocking, _SYSTEM_PROMPT, user_prompt
             )
-        services: List[str] = _parse_services(raw_response)
-    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
-        log.exception("extractor.http_error", lead_id=lead_id, error=str(exc))
-        return {
-            "extracted_services": [],
-            "retry_count": retry_count + 1,
-            "error_detail": f"LLM endpoint error: {exc}",
-        }
+    except httpx.RequestError as exc:
+        # Connection refused, timeout, DNS failure — transient network issue.
+        log.error("extractor.network_error", lead_id=lead_id, error=str(exc))
+        raise RuntimeError(f"LLM network error: {exc}") from exc
+    except httpx.HTTPStatusError as exc:
+        # 4xx / 5xx from the LLM endpoint — treat as transient infrastructure failure.
+        log.error(
+            "extractor.http_error",
+            lead_id=lead_id,
+            status_code=exc.response.status_code,
+            error=str(exc),
+        )
+        raise RuntimeError(f"LLM HTTP {exc.response.status_code}: {exc}") from exc
     except Exception as exc:
-        log.exception("extractor.error", lead_id=lead_id, error=str(exc))
-        return {
-            "extracted_services": [],
-            "retry_count": retry_count + 1,
-            "error_detail": f"LLM call failed: {exc}",
-        }
+        # Any other provider error (groq, llama_cpp SDK, etc.) — infrastructure,
+        # not a graph-level logical failure.
+        log.exception("extractor.llm_call_failed", lead_id=lead_id, error=str(exc))
+        raise RuntimeError(f"LLM call failed: {exc}") from exc
+
+    # ── Parse LLM output ──────────────────────────────────────────────────────
+    # The network call succeeded. If parsing yields nothing, that is a *logical*
+    # failure (model returned malformed JSON or an empty array). Increment
+    # retry_count so the graph can retry extraction or escalate to HITL.
+    services: List[str] = _parse_services(raw_response)
 
     log.info(
         "extractor.done",
@@ -204,5 +229,5 @@ async def extractor_node(state: AgentState) -> Dict:
     return {
         "extracted_services": services,
         "retry_count": retry_count + 1,
-        "error_detail": None,
+        "error_detail": None if services else "LLM response parsed but no services extracted",
     }

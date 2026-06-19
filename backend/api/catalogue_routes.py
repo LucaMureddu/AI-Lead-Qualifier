@@ -18,6 +18,8 @@ Design decisions
   actually changed (old_value != new_value).
 - Pydantic Field(ge=0) on price prevents negative prices at the schema level,
   returning 422 Unprocessable Entity before any DB interaction.
+- PATCH is rate-limited to 10/minute per IP (slowapi) to prevent ARQ queue
+  flooding from burst writes. The limiter uses the Redis backend (fail-open).
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from api.dependencies import get_current_tenant_id
+from core.rate_limit import limiter
 from database.db_core import get_pool
 
 log = structlog.get_logger()
@@ -156,6 +159,7 @@ async def list_catalogue_items(
 # ── PATCH /api/catalog/items/{item_id} ───────────────────────────────────────
 
 @catalogue_router.patch("/items/{item_id}", response_model=CatalogueItemPatchResponse)
+@limiter.limit("10/minute")
 async def patch_catalogue_item(
     item_id: str,
     body: CatalogueItemPatch,
