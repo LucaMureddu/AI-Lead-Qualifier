@@ -3,120 +3,77 @@ agents/calculator.py
 --------------------
 CalculatorNode — pure Python, zero LLM.
 
-Responsibilities
+V2 changes vs V1
 ----------------
-1. Sum the ``price`` field of every entry in ``mapped_services``.
-2. Write the result to ``total_quote``.
-3. Append a structured SSE log entry.
-
-Design contract
----------------
-- No external calls (API, DB, filesystem).
-- No LLM involvement — deterministic, testable, auditable.
-- Raises ValueError on malformed input rather than silently returning 0.
+- State type: LeadState → AgentState
+- Reads lead_id from state["lead"].lead_id
+- Removed: sse_logs; uses structlog instead
+- Sets status="completed" on success
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Dict, List
 
-from core.state import LeadState
+import structlog
 
-logger: logging.Logger = logging.getLogger(__name__)
+from core.state import AgentState
+
+log = structlog.get_logger()
 
 
 def _sum_prices(mapped_services: List[Dict]) -> float:
-    """
-    Sum the ``price`` field across all mapped service entries.
-
-    Parameters
-    ----------
-    mapped_services : list of dicts
-        Each dict must contain a numeric ``price`` key.
-
-    Returns
-    -------
-    float
-        Total price (rounded to 2 decimal places).
-
-    Raises
-    ------
-    KeyError
-        If a service dict is missing the ``price`` key.
-    TypeError
-        If a ``price`` value cannot be converted to float.
-    """
     total: float = 0.0
     for entry in mapped_services:
-        price: float = float(entry["price"])
-        total += price
+        total += float(entry["price"])
     return round(total, 2)
 
 
-def calculator_node(state: LeadState) -> Dict:
+def calculator_node(state: AgentState) -> Dict:
     """
-    LangGraph node: compute the total quote from ``mapped_services``.
+    LangGraph node: compute the total quote from mapped_services.
 
-    Parameters
-    ----------
-    state : LeadState
-        Current graph state.
-
-    Returns
-    -------
-    dict
-        Partial state update with ``total_quote`` and appended ``sse_logs``.
+    Reads: state["lead"].lead_id, state["mapped_services"]
+    Writes: total_quote, on_request_services, status
     """
-    lead_id: str = state["lead_info"].id
+    lead_id: str = state["lead"].lead_id
+    tenant_id: str = state["lead"].tenant_id
     mapped_services: List[Dict] = state.get("mapped_services", [])
 
-    logger.info(
-        "[calculator] Computing quote for lead_id=%s | items=%d",
-        lead_id,
-        len(mapped_services),
+    log.info(
+        "calculator.start",
+        lead_id=lead_id,
+        tenant_id=tenant_id,
+        items=len(mapped_services),
     )
 
     try:
         total: float = _sum_prices(mapped_services)
     except (KeyError, TypeError, ValueError) as exc:
-        error_msg: str = (
-            f"[calculator] Price calculation error for lead_id={lead_id}: {exc}"
-        )
-        logger.exception(error_msg)
+        log.exception("calculator.error", lead_id=lead_id, error=str(exc))
         return {
             "total_quote": 0.0,
-            "sse_logs": [f"[ERROR] {error_msg}"],
-            "error": error_msg,
+            "status": "error",
+            "error_detail": f"Price calculation error: {exc}",
         }
 
-    # Build a readable breakdown for the SSE stream.
-    on_request: List[str] = []
-    breakdown_lines: List[str] = []
-    for entry in mapped_services:
-        name = entry.get("matched_name", entry.get("service", "?"))
-        price = float(entry.get("price", 0.0))
-        if price == 0.0:
-            breakdown_lines.append(f"  • {name} → da quotare")
-            on_request.append(name)
-        else:
-            breakdown_lines.append(
-                f"  • {name} → {price:.2f} {entry.get('unit', '€')}"
-            )
-    breakdown: str = "\n".join(breakdown_lines)
+    on_request: List[str] = [
+        entry.get("matched_name", entry.get("service", "?"))
+        for entry in mapped_services
+        if float(entry.get("price", 0.0)) == 0.0
+    ]
 
-    partial_note = (
-        f" (PARZIALE — {len(on_request)} servizi da quotare separatamente)"
-        if on_request else ""
+    log.info(
+        "calculator.done",
+        lead_id=lead_id,
+        tenant_id=tenant_id,
+        total_quote=total,
+        on_request_count=len(on_request),
     )
-    log_entry: str = (
-        f"[CALCULATOR] lead_id={lead_id} | total_quote={total:.2f}€{partial_note}\n{breakdown}"
-    )
-    logger.info(log_entry)
 
     return {
         "total_quote": total,
         "on_request_services": on_request,
-        "sse_logs": [log_entry],
-        "error": None,
+        "status": "processing",  # delivery node will set "completed"
+        "error_detail": None,
     }

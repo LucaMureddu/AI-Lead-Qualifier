@@ -62,11 +62,11 @@ Key design decisions
 
    The value passed to ``resume=`` becomes the return value of ``interrupt()``.
 
-5. AsyncSqliteSaver persistence
-   The graph is compiled with an ``AsyncSqliteSaver`` checkpointer so that
-   every node transition is persisted.  If the process crashes between nodes
-   (or while waiting for human approval), the run can be resumed exactly where
-   it left off.
+5. AsyncPostgresSaver persistence (V2)
+   The graph is compiled with an ``AsyncPostgresSaver`` checkpointer so that
+   every node transition is persisted in Postgres.  If the process crashes
+   between nodes (or while waiting for human approval), the run can be resumed
+   exactly where it left off.
 """
 
 from __future__ import annotations
@@ -456,7 +456,7 @@ async def approval_node(state: IngestionState) -> Dict:
     How HITL works in LangGraph
     ---------------------------
     1. This node calls ``interrupt(value=review_payload)``.
-    2. LangGraph persists the current checkpoint (via AsyncSqliteSaver) and
+    2. LangGraph persists the current checkpoint (via AsyncPostgresSaver) and
        raises an internal ``GraphInterrupt`` exception, which is caught by the
        runtime — the graph is NOT crashed, just suspended.
     3. The caller (API handler) receives the interrupt payload and forwards it
@@ -538,83 +538,95 @@ async def approval_node(state: IngestionState) -> Dict:
 # 5. FinalizeNode
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _write_to_chroma_sync(
-    host: str,
-    port: int,
+async def _write_to_pgvector(
     tenant_id: str,
     items: List[ServiceItem],
 ) -> int:
     """
-    Upsert normalised items into the tenant-scoped ChromaDB collection.
+    Upsert normalised items into the pgvector catalogue table (V2).
 
-    Collection naming: ``catalogue_{tenant_id}``
-    — each tenant's data is fully isolated.
+    Flusso
+    ------
+    1. Costruisce la stringa ``description`` per ogni ServiceItem.
+    2. Genera gli embedding in batch via ``services.embeddings.aembed_documents``
+       (un'unica chiamata HTTP a Ollama invece di N chiamate seriali).
+    3. Upsert in pgvector tramite ``database.vector_store.upsert_items``.
 
-    Documents: concatenation of name + description (for embedding).
-    Metadata: all structured fields (price, currency, unit, category, id).
-    IDs: the ServiceItem UUID (stable across upserts).
+    Lo stesso modello usato qui per l'ingestion DEVE essere usato in
+    ``agents/mapper.py`` per la similarity_search: entrambi passano per
+    ``services.embeddings`` che centralizza la configurazione del modello.
 
-    Returns the number of items written.
+    Returns
+    -------
+    int
+        Numero di righe scritte/aggiornate.
     """
-    import chromadb  # noqa: PLC0415
+    from database.vector_store import upsert_items  # noqa: PLC0415
+    from services.embeddings import EmbeddingError, aembed_documents  # noqa: PLC0415
 
-    client = chromadb.HttpClient(host=host, port=port)
-    collection_name: str = f"catalogue_{tenant_id}"
+    if not items:
+        return 0
 
-    collection = client.get_or_create_collection(
-        name=collection_name,
-        metadata={"hnsw:space": "cosine"},
-    )
-
-    documents: List[str] = []
-    metadatas: List[Dict[str, Any]] = []
-    ids: List[str] = []
-
+    # ── 1. Costruisci le descrizioni (testo da embeddare) ─────────────────────
+    descriptions: List[str] = []
     for item in items:
-        doc_text = f"{item.name}"
+        text: str = item.name
         if item.description:
-            doc_text += f" — {item.description}"
+            text += f" — {item.description}"
         if item.category:
-            doc_text += f" [{item.category}]"
+            text += f" [{item.category}]"
+        descriptions.append(text)
 
-        documents.append(doc_text)
-        metadatas.append(
-            {
-                "service_name": item.name,
+    # ── 2. Batch embedding asincrono via Ollama ───────────────────────────────
+    # aembed_documents logga solo batch_size e tenant_id in caso di errore,
+    # mai il testo grezzo dei servizi.
+    try:
+        embeddings: List[List[float]] = await aembed_documents(
+            descriptions, tenant_id=tenant_id
+        )
+    except EmbeddingError as exc:
+        # Ri-solleviamo come RuntimeError: il chiamante (finalizer_node)
+        # cattura Exception e lo gestisce nel blocco di error reporting.
+        raise RuntimeError(
+            f"Embedding batch fallito durante l'ingestion "
+            f"[tenant='{tenant_id}', items={len(items)}]: {exc}"
+        ) from exc
+
+    # ── 3. Componi e upserta in pgvector ──────────────────────────────────────
+    pgvector_items: List[Dict[str, Any]] = [
+        {
+            "service": item.name,
+            "price": item.price,
+            "description": descriptions[idx],
+            "embedding": embeddings[idx],
+            "metadata": {
                 "category": item.category or "",
-                "price": item.price,
                 "currency": item.currency,
                 "unit": item.unit or "",
                 "tenant_id": tenant_id,
                 "ingested_at": item.ingested_at.isoformat(),
-            }
-        )
-        ids.append(item.id)
+                "id": item.id,
+            },
+        }
+        for idx, item in enumerate(items)
+    ]
 
-    if documents:
-        collection.upsert(documents=documents, metadatas=metadatas, ids=ids)  # type: ignore[arg-type]
-
-    return len(documents)
+    await upsert_items(pgvector_items, tenant_id)
+    return len(pgvector_items)
 
 
 async def finalizer_node(state: IngestionState) -> Dict:
     """
-    FinalizeNode — persists approved items to ChromaDB.
+    FinalizeNode — persists approved items to pgvector (V2).
 
-    Only items that are NOT flagged are written (flagged items were either
-    approved as-is by the human or are being dropped pending correction).
-    If the human approved, ALL items (including flagged ones) are written,
-    since the human confirmed acceptability.
+    Replaces ChromaDB writes from V1 with database.vector_store.upsert_items.
+    Deduplicates by item ID before writing to prevent upsert conflicts.
     """
-    settings = get_settings()
     tenant_id: str = state["tenant_id"]
     items: List[ServiceItem] = state.get("normalized_items", [])
     approved: Optional[bool] = state.get("approved")
 
-    # Deduplicate by item ID before writing.  The operator.add reducer on
-    # normalized_items is safe against node re-runs (chunker → normalizer loops)
-    # but a defensive dedup here guards against any future reducer misuse and
-    # prevents ChromaDB from raising DuplicateIDError on the same upsert batch.
+    # Deduplicate by item ID (operator.add accumulates across normalizer loop iterations)
     seen: Dict[str, ServiceItem] = {}
     for item in items:
         seen.setdefault(item.id, item)  # first occurrence wins
@@ -626,43 +638,33 @@ async def finalizer_node(state: IngestionState) -> Dict:
             tenant_id, len(items), len(unique_items), len(items) - len(unique_items),
         )
 
-    # If we reached here without going through approval, all items were clean.
-    # If we went through approval and got approved=True, write everything.
-    items_to_write = unique_items  # human confirmed, write all (deduplicated)
+    items_to_write = unique_items
 
     logger.info(
-        "[finalizer] tenant=%s | writing %d items to ChromaDB | approved=%s",
+        "[finalizer] tenant=%s | writing %d items to pgvector | approved=%s",
         tenant_id, len(items_to_write), approved,
     )
 
     try:
-        written: int = await asyncio.to_thread(
-            _write_to_chroma_sync,
-            settings.chroma_host,
-            settings.chroma_port,
-            tenant_id,
-            items_to_write,
-        )
+        written: int = await _write_to_pgvector(tenant_id, items_to_write)
     except Exception as exc:  # noqa: BLE001
         import traceback  # noqa: PLC0415
         tb = traceback.format_exc()
         exc_type = type(exc).__name__
         error_msg = (
-            f"[finalizer] ChromaDB write failed for tenant={tenant_id}: "
+            f"[finalizer] pgvector write failed for tenant={tenant_id}: "
             f"[{exc_type}] {exc}"
         )
         logger.exception(error_msg)
-        # Expose traceback in SSE so the UI shows the full context
         sse_lines = [
             f"[ERROR] {error_msg}",
-            f"[ERROR] host={settings.chroma_host}:{settings.chroma_port}  collection=catalogue_{tenant_id}",
             *[f"[ERROR] {line}" for line in tb.splitlines()[-10:]],
         ]
         return {"sse_logs": sse_lines, "error": error_msg}
 
     log_entry = (
         f"[FINALIZER] tenant={tenant_id} | written={written} | "
-        f"collection=catalogue_{tenant_id} | status=OK"
+        f"table=catalogue_items | status=OK"
     )
     logger.info(log_entry)
 
@@ -722,9 +724,9 @@ def build_ingestion_graph(checkpointer=None):
 
     Parameters
     ----------
-    checkpointer : AsyncSqliteSaver | None
-        Persistence backend.  Pass ``None`` only in unit tests.
-        In production, always provide an ``AsyncSqliteSaver`` so that
+    checkpointer : AsyncPostgresSaver | None
+        Persistence backend (V2: Postgres).  Pass ``None`` only in unit tests.
+        In production, always provide an ``AsyncPostgresSaver`` so that
         interrupt/resume and crash recovery work correctly.
 
     Returns
@@ -736,13 +738,11 @@ def build_ingestion_graph(checkpointer=None):
     ---------------------------
     .. code-block:: python
 
-        import aiosqlite
-        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        from core.graph import get_checkpointer
         from ingestion.graph import build_ingestion_graph, make_initial_state
 
         async def run():
-            conn = await aiosqlite.connect("data/ingestion.db")
-            checkpointer = AsyncSqliteSaver(conn)
+            checkpointer = await get_checkpointer()
             graph = build_ingestion_graph(checkpointer)
 
             state = make_initial_state(
@@ -752,7 +752,7 @@ def build_ingestion_graph(checkpointer=None):
             )
             config = {"configurable": {"thread_id": "acme-run-001"}}
 
-            # First invocation — runs until interrupt (or completion)
+            # Runs until interrupt (HITL) or completion
             result = await graph.ainvoke(state, config=config)
     """
     from langgraph.graph import END, StateGraph  # noqa: PLC0415

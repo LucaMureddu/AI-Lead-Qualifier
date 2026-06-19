@@ -1,0 +1,92 @@
+# docker-compose.obs.yml
+# ---------------------------------------------------------------------------
+# PLG Observability Stack (Promtail + Loki + Grafana) — Day-2 Operations
+#
+# Run ALONGSIDE the main compose file:
+#   docker compose -f docker-compose.yml -f docker-compose.obs.yml up -d
+#
+# Or standalone (if the main stack is already running):
+#   docker compose -f docker-compose.obs.yml up -d
+#
+# Grafana UI:   http://localhost:3000  (admin / admin — change on first login)
+# Loki API:     http://localhost:3100
+# Promtail:     http://localhost:9080/metrics
+#
+# Log pipeline:
+#   FastAPI/ARQ stdout (JSON) → Promtail (docker_sd) → Loki → Grafana
+# ---------------------------------------------------------------------------
+
+networks:
+  # Shared network so Promtail can reach Loki, and Grafana can reach Loki
+  obs:
+    driver: bridge
+
+volumes:
+  loki_data:
+  grafana_data:
+
+services:
+
+  # ── Loki — log aggregation backend ─────────────────────────────────────────
+  loki:
+    image: grafana/loki:2.9.4
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
+    networks:
+      - obs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready | grep -q ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── Promtail — log collector / shipper ─────────────────────────────────────
+  promtail:
+    image: grafana/promtail:2.9.4
+    restart: unless-stopped
+    ports:
+      - "9080:9080"
+    volumes:
+      # Mount the promtail config
+      - ./observability/promtail-config.yaml:/etc/promtail/config.yaml:ro
+      # Docker socket — required for docker_sd_configs log discovery
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Promtail tracks its read position in /tmp (ephemeral is fine for dev)
+    command: -config.file=/etc/promtail/config.yaml
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - obs
+
+  # ── Grafana — visualisation & alerting ────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.2
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_USER: admin
+      # Disable analytics / telemetry (fully local)
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Auto-provision the Loki datasource on first boot
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - obs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health | grep -q ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 5

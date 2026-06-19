@@ -1,0 +1,80 @@
+# observability/promtail-config.yaml
+# ---------------------------------------------------------------------------
+# Promtail scrapes Docker container stdout/stderr and ships JSON log lines
+# to Loki with extracted labels for Grafana querying and alerting.
+#
+# Pipeline:
+#   Docker container stdout (JSON via structlog)
+#     → Promtail docker_sd_configs
+#       → JSON parsing pipeline
+#         → extracted labels: level, tenant_id, thread_id, service
+#           → Loki
+#
+# Labels available in Grafana LogQL:
+#   {job="docker"} | json | confidence_score < 0.5
+#   {job="docker", tenant_id="acme"}
+#   {job="docker"} | json | level="error"
+# ---------------------------------------------------------------------------
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+        filters:
+          # Only scrape containers from our compose project
+          - name: label
+            values: ["com.docker.compose.project=ai_lead_qualifier"]
+
+    relabel_configs:
+      # Use the container name as a label
+      - source_labels: [__meta_docker_container_name]
+        regex: "/(.*)"
+        target_label: container
+      # Keep the compose service name
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        target_label: compose_service
+
+    pipeline_stages:
+      # 1. Parse the outer JSON emitted by structlog
+      - json:
+          expressions:
+            level: level
+            event: event
+            timestamp: timestamp
+            tenant_id: tenant_id
+            thread_id: thread_id
+            service: service
+            confidence_score: confidence_score
+            lead_id: lead_id
+            status: status
+
+      # 2. Promote high-cardinality-safe fields to Loki stream labels
+      #    (keep label cardinality low — avoid lead_id as a label)
+      - labels:
+          level:
+          tenant_id:
+          thread_id:
+          service:
+          compose_service:
+
+      # 3. Use the structlog ISO timestamp as the Loki log timestamp
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+          fallback_formats:
+            - RFC3339
+
+      # 4. Set the final log line to the full raw JSON (Grafana sees it all)
+      - output:
+          source: event

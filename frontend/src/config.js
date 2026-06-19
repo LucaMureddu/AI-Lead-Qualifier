@@ -3,9 +3,11 @@
 // Costanti dell'app e configurazione lato client.
 // Unica fonte per: URL base API, lista tenant nota, soglie di validazione.
 
-/** URL base del backend FastAPI. Vuoto ("") ⇒ same-origin (proxy Vite). */
+/** URL base del backend FastAPI. Vuoto ("") ⇒ same-origin (proxy Vite).
+ *  Usa || (non ??) così una stringa vuota cade comunque sul default,
+ *  evitando che Nginx riceva richieste POST dirette e risponda 405. */
 export const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 /**
  * Lista iniziale dei tenant noti (B2 — dropdown lato client).

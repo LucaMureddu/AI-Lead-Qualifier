@@ -15,6 +15,7 @@ WORKDIR /app
 # Dipendenze di sistema minime (build-essential serve per alcuni pacchetti C)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Layer di dipendenze Python (sfrutta la cache Docker) ─────────────────────

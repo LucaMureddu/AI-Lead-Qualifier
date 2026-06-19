@@ -1,0 +1,144 @@
+name: CD — Deploy on-premise
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Trigger: workflow_run — si attiva SOLO quando il workflow "CI" completa
+# con successo sul branch main.
+#
+# Questo è il "no blind deploy" gate:
+#   1. PR aperta → CI gira come required check.
+#   2. PR merged in main → push su main → CI gira di nuovo sul commit merged.
+#   3. CI verde su main → questo workflow si attiva e deploya.
+#
+# Se CI fallisce su main, questo workflow NON parte.
+# Il gate è indipendente dalla protezione del branch configurata su GitHub:
+# raccomandato attivare ENTRAMBI per ridondanza.
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  workflow_run:
+    workflows: ["CI"]          # deve corrispondere esattamente al `name:` di ci.yml
+    types: [completed]
+    branches: [main]
+
+# Impedisce deploy paralleli: se un deploy è in corso e ne parte un altro,
+# il secondo viene messo in coda (non cancellato — un deploy a metà sarebbe
+# peggio di uno in attesa).
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  # ── Gate: CI verde? ───────────────────────────────────────────────────────────
+  # La condizione `if` blocca il job se CI non è verde.
+  # In caso di CI fallita, il job appare come "skipped" (non failed):
+  # questo è il comportamento corretto — il deploy non doveva partire.
+  deploy:
+    name: "Deploy → server on-premise"
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    # Permessi minimi: solo leggere lo stato della repository.
+    permissions:
+      contents: read
+
+    steps:
+      # ── Tracciabilità: stampa il commit deployato ─────────────────────────────
+      # Nessun segreto è stampato qui: solo SHA e messaggio del commit.
+      - name: Log — commit in deploy
+        run: |
+          echo "▶ Deploying commit:"
+          echo "  SHA:     ${{ github.event.workflow_run.head_sha }}"
+          echo "  Branch:  ${{ github.event.workflow_run.head_branch }}"
+          echo "  Trigger: ${{ github.event.workflow_run.display_title }}"
+
+      # ── Connessione SSH + esecuzione script di deploy ─────────────────────────
+      #
+      # Segreti usati (configurare in: Settings → Secrets → Actions):
+      #   SERVER_HOST         IP o hostname del server on-premise
+      #   SERVER_USER         utente SSH (es. deploy, ubuntu)
+      #   SERVER_SSH_KEY      chiave privata SSH (intera, incluso header/footer)
+      #   SERVER_PORT         porta SSH (default 22)
+      #   SERVER_DEPLOY_PATH  path assoluto del progetto sul server
+      #                       (es. /opt/ai-lead-qualifier)
+      #
+      # I segreti sono automaticamente mascherati da GitHub Actions nei log.
+      # Le credenziali DB e Redis non transitano MAI per questo workflow:
+      # sono nel file .env.prod sul server, non in GitHub Secrets.
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT }}
+          # script_stop: true → il primo comando che fallisce interrompe tutto.
+          # Equivale a `set -e` per ogni riga dello script.
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            # ── 1. Entra nella directory del progetto ─────────────────────────
+            cd "${{ secrets.SERVER_DEPLOY_PATH }}"
+
+            echo "[1/5] Pull del codice dal branch main..."
+            # --ff-only: fallisce se il branch locale diverge da origin/main.
+            # Segnala tempestivamente situazioni anomale (es. commit locali).
+            git pull --ff-only origin main
+
+            echo "[2/5] Build immagini Docker..."
+            # --parallel: build simultanea di backend e worker (stesso Dockerfile).
+            # Le immagini precedenti restano disponibili finché la nuova build
+            # non è completata, riducendo il downtime.
+            docker compose -f docker-compose.prod.yml build --parallel
+
+            echo "[3/5] Migrazioni Alembic..."
+            # Container effimero: viene avviato, esegue alembic, viene rimosso.
+            # Se alembic fallisce (exit code != 0), script_stop interrompe tutto:
+            # docker compose up NON verrà eseguito, evitando deploy con schema
+            # DB non aggiornato.
+            # L'env file .env.prod sul server contiene DATABASE_DSN.
+            docker compose -f docker-compose.prod.yml run \
+              --rm \
+              --no-deps \
+              backend \
+              sh -c "alembic upgrade head"
+
+            echo "[4/5] Riavvio servizi..."
+            # --remove-orphans: rimuove container di servizi eliminati dal file.
+            # -d: detached, non blocca la sessione SSH.
+            docker compose -f docker-compose.prod.yml up \
+              -d \
+              --remove-orphans
+
+            echo "[5/5] Health check post-deploy..."
+            # Attende fino a 30 secondi che il backend risponda su /health.
+            # Il check usa curl dal container worker già avviato (evita dipendenze
+            # da curl sull'host) — oppure direttamente sull'host se disponibile.
+            for i in $(seq 1 6); do
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                http://localhost:8000/health 2>/dev/null || echo "000")
+              if [ "$STATUS" = "200" ]; then
+                echo "✓ Backend healthy (HTTP $STATUS) dopo ${i}x5s"
+                break
+              fi
+              echo "  Tentativo $i/6 — HTTP $STATUS — attendo 5s..."
+              sleep 5
+              if [ "$i" = "6" ]; then
+                echo "✗ Backend non risponde dopo 30s. Verificare i log:"
+                echo "  docker compose -f docker-compose.prod.yml logs backend"
+                exit 1
+              fi
+            done
+
+            echo ""
+            echo "✓ Deploy completato — commit ${{ github.event.workflow_run.head_sha }}"
+
+      # ── Notifica fallimento (opzionale) ──────────────────────────────────────
+      # Da abilitare aggiungendo il secret SLACK_WEBHOOK_URL o equivalente.
+      # - name: Notifica Slack su fallimento
+      #   if: failure()
+      #   uses: slackapi/slack-github-action@v1
+      #   with:
+      #     payload: |
+      #       {"text": "🔴 Deploy fallito su main — ${{ github.event.workflow_run.head_sha }}"}
+      #   env:
+      #     SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -1,9 +1,14 @@
 """
 core/config.py
 --------------
-Centralised configuration via Pydantic Settings.
-All tunables come from environment variables (or a .env file).
-Never hard-code paths, URLs, or secrets here.
+Centralised configuration via Pydantic Settings — V2.
+
+V2 changes vs V1
+----------------
+- REMOVED: chroma_host, chroma_port, chroma_collection, chroma_n_results, chroma_url, sqlite_db_path
+- ADDED:   database_dsn (asyncpg/Postgres), redis_dsn (ARQ), jwt_public_key_path,
+           jwt_private_key_path, pgvector_embedding_dim, pgvector_n_results,
+           cors_origins, app_version, token_endpoint_enabled
 """
 
 from __future__ import annotations
@@ -35,73 +40,94 @@ class Settings(BaseSettings):
         ),
     )
 
-    # ── OpenAI-compatible backend (Ollama, LM Studio, vLLM, …) ──────────────
+    # ── OpenAI-compatible backend ─────────────────────────────────────────────
     llm_base_url: str = Field(
         default="http://localhost:11434/v1",
-        description=(
-            "Base URL of the OpenAI-compatible inference server. "
-            "Ollama default: http://localhost:11434/v1  "
-            "LM Studio default: http://localhost:1234/v1"
-        ),
+        description="Base URL of the OpenAI-compatible inference server.",
     )
     llm_model_name: str = Field(
         default="llama3",
-        description=(
-            "Model identifier sent in the 'model' field of the chat/completions payload. "
-            "Must match the name exposed by the inference server (e.g. 'llama3', 'mistral')."
-        ),
+        description="Model identifier sent in the chat/completions payload.",
     )
 
-    # ── Groq cloud (used only when llm_provider='groq') ──────────────────────
-    groq_api_key: str = Field(
-        default="",
-        description="Groq API key (used only when llm_provider='groq').",
-    )
-    groq_model: str = Field(
-        default="llama3-8b-8192",
-        description="Groq model identifier.",
-    )
+    # ── Groq cloud ────────────────────────────────────────────────────────────
+    groq_api_key: str = Field(default="", description="Groq API key.")
+    groq_model: str = Field(default="llama3-8b-8192", description="Groq model identifier.")
 
-    # ── Legacy local GGUF (used only when llm_provider='llama') ─────────────
+    # ── Legacy local GGUF ─────────────────────────────────────────────────────
     llm_model_path: Path = Field(
         default=Path("models/llama-3.gguf"),
-        description="Filesystem path to the GGUF model (used when llm_provider='llama').",
+        description="Filesystem path to the GGUF model (llm_provider='llama' only).",
     )
 
     llm_temperature: float = Field(default=0.0, ge=0.0, le=1.0)
     llm_max_tokens: int = Field(default=1024, gt=0)
 
-    # ── ChromaDB ──────────────────────────────────────────────────────────────
-    chroma_host: str = Field(default="localhost", description="ChromaDB server host.")
-    chroma_port: int = Field(default=8001, gt=0, lt=65536)
-    chroma_collection: str = Field(
-        default="service_catalogue",
-        description="Name of the ChromaDB collection holding the service price list.",
+    # ── PostgreSQL (V2) ───────────────────────────────────────────────────────
+    database_dsn: str = Field(
+        default="postgresql://app:password@localhost/ai_lead_qualifier",
+        description="DSN asyncpg for the Postgres pool (LangGraph checkpointer + pgvector).",
     )
-    chroma_n_results: int = Field(
+
+    # ── Redis / ARQ (V2) ─────────────────────────────────────────────────────
+    redis_dsn: str = Field(
+        default="redis://localhost:6379",
+        description="Redis URL for ARQ worker and job broker.",
+    )
+
+    # ── JWT RS256 (V2) ────────────────────────────────────────────────────────
+    jwt_public_key_path: Path = Field(
+        default=Path("keys/public.pem"),
+        description="Path to the RSA public key for JWT RS256 validation.",
+    )
+    jwt_private_key_path: Path = Field(
+        default=Path("keys/private.pem"),
+        description="Path to the RSA private key for /token (dev/test only).",
+    )
+
+    # ── Embedding / Ollama (V2) ───────────────────────────────────────────────
+    embedding_model: str = Field(
+        default="nomic-embed-text",
+        description=(
+            "Modello Ollama per la generazione di vettori. "
+            "Deve essere coerente con pgvector_embedding_dim: "
+            "nomic-embed-text → 768 dim, mxbai-embed-large → 1024 dim."
+        ),
+    )
+    embedding_base_url: str = Field(
+        default="http://localhost:11434",
+        description=(
+            "URL base del server Ollama per il servizio di embedding. "
+            "In Docker Compose usare http://host.docker.internal:11434. "
+            "Non includere il path /api/...: lo aggiunge OllamaEmbeddings."
+        ),
+    )
+
+    # ── pgvector (V2) ─────────────────────────────────────────────────────────
+    pgvector_embedding_dim: int = Field(
+        default=768,
+        description=(
+            "Dimensione del vettore di embedding archiviato in pgvector. "
+            "Deve coincidere con l'output di embedding_model: "
+            "nomic-embed-text → 768, mxbai-embed-large → 1024."
+        ),
+    )
+    pgvector_n_results: int = Field(
         default=3,
-        description="Number of nearest-neighbour results to fetch per query.",
+        description="Number of nearest-neighbour results per pgvector query.",
     )
+
+    # ── Ingestion ─────────────────────────────────────────────────────────────
     ingestion_chunk_size: int = Field(
         default=5,
         gt=0,
-        description="Numero di righe per chunk nel normalizer. Valori bassi (5-10) per LLM locali.",
-    )
-
-    @property
-    def chroma_url(self) -> str:
-        return f"http://{self.chroma_host}:{self.chroma_port}"
-
-    # ── Persistence / LangGraph ───────────────────────────────────────────────
-    sqlite_db_path: Path = Field(
-        default=Path("data/checkpoints.db"),
-        description="Path to the SQLite file used by LangGraph SqliteSaver.",
+        description="Rows per chunk in the normalizer. Low values (5-10) for local LLMs.",
     )
 
     # ── Routing thresholds ────────────────────────────────────────────────────
     max_retry_count: int = Field(
         default=2,
-        description="How many times the Extractor→Mapper loop may retry before human fallback.",
+        description="How many times Extractor→Mapper may retry before HITL fallback.",
     )
     mapper_min_results: int = Field(
         default=1,
@@ -111,30 +137,51 @@ class Settings(BaseSettings):
         default=0.0,
         ge=0.0,
         description=(
-            "Se > 0, il Mapper scarta i match con distance (coseno) oltre questa "
-            "soglia. 0 = disabilitato (comportamento storico: tieni sempre il match "
-            "più vicino). Con la soglia attiva, una query fuori catalogo svuota "
-            "mapped_services → route_after_mapper → retry → human_fallback "
-            "(niente preventivi 'allucinati' su match irrilevanti)."
+            "If > 0, Mapper discards matches with cosine distance above this threshold. "
+            "0 = disabled (always keep the closest match)."
         ),
     )
 
     # ── API ───────────────────────────────────────────────────────────────────
+    app_version: str = Field(default="2.0.0", description="Application version string.")
     api_host: str = Field(default="0.0.0.0")
     api_port: int = Field(default=8000, gt=0, lt=65536)
     api_reload: bool = Field(default=False, description="Uvicorn auto-reload (dev only).")
     log_level: str = Field(default="INFO")
 
+    # ── CORS ─────────────────────────────────────────────────────────────────
+    # Env var: CORS_ORIGINS='["https://app.example.com","https://api.example.com"]'
+    # In dev, defaults to localhost. In production, set explicitly in .env.prod.
+    cors_origins: list[str] = Field(
+        default=["http://localhost", "http://localhost:80", "http://localhost:8000"],
+        description="Allowed CORS origins. Override in production via CORS_ORIGINS env var.",
+    )
+
+    # ── Security ──────────────────────────────────────────────────────────────
+    # POST /token issues JWT tokens for any username — for dev/test only.
+    # Set TOKEN_ENDPOINT_ENABLED=false in .env.prod to disable it entirely.
+    token_endpoint_enabled: bool = Field(
+        default=True,
+        description="Enable the mock /token endpoint. MUST be false in production.",
+    )
+
     # ── Delivery ──────────────────────────────────────────────────────────────
     delivery_max_attempts: int = Field(
         default=3,
         gt=0,
-        description="Maximum number of delivery attempts before the node routes to END.",
+        description="Maximum delivery attempts before routing to END.",
     )
     delivery_timeout_seconds: float = Field(
         default=5.0,
         gt=0.0,
         description="HTTP request timeout (seconds) for WebhookAdapter.",
+    )
+
+    # ── LangGraph Serialization ───────────────────────────────────────────────
+    langgraph_allowed_msgpack_modules: str = Field(
+        default="core.state,ingestion.models",
+        description="Evita il warning di serializzazione sui tipi custom in Postgres.",
+        alias="LANGGRAPH_ALLOWED_MSGPACK_MODULES",
     )
 
     # ── PII Masking ───────────────────────────────────────────────────────────
@@ -143,26 +190,26 @@ class Settings(BaseSettings):
         description="Replacement string for masked PII in sanitised text.",
     )
 
-    # ── Catalogue upload (B1) ───────────────────────────────────────────────────
+    # ── Catalogue upload ──────────────────────────────────────────────────────
     upload_dir: Path = Field(
         default=Path("uploads"),
-        description="Base directory where uploaded catalogue files are stored (tenant-scoped subdirs).",
+        description="Base directory for uploaded catalogue files (tenant-scoped subdirs).",
     )
     upload_max_bytes: int = Field(
-        default=10 * 1024 * 1024,  # 10 MB
+        default=10 * 1024 * 1024,
         gt=0,
         description="Maximum allowed size (bytes) for an uploaded catalogue file.",
     )
 
-    # ── Tenant profile (preventivo brandizzato) ─────────────────────────────────
+    # ── Tenant profile ────────────────────────────────────────────────────────
     profiles_dir: Path = Field(
         default=Path("data/profiles"),
         description="Directory where per-tenant company profiles are stored as JSON.",
     )
     profile_max_bytes: int = Field(
-        default=2 * 1024 * 1024,  # 2 MB (include il logo in base64)
+        default=2 * 1024 * 1024,
         gt=0,
-        description="Maximum serialized size (bytes) of a tenant profile, logo included.",
+        description="Maximum serialized size (bytes) of a tenant profile.",
     )
 
     @field_validator("llm_provider")

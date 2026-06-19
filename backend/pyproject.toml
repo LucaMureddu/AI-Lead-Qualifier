@@ -10,17 +10,20 @@ asyncio_default_fixture_loop_scope = "function"   # pytest-asyncio >= 0.23: loop
 testpaths = ["tests"]
 # Gli eval LIVE (modello reale) sono esclusi di default con -m "not eval".
 # --strict-markers fa fallire l'uso di marker non registrati qui sotto.
-addopts = "-ra -q --strict-markers -m 'not eval'"
+addopts = "-ra -q --strict-markers -m 'not eval and not eval_live'"
 markers = [
     "unit: test puri e veloci, nessuna I/O",
-    "integration: grafo/API con LLM e ChromaDB mockati",
+    "integration: grafo/API con LLM e DB mockati",
+    "vector_store: test di integrazione pgvector con container reale (testcontainers) — richiedono Docker",
     "eval_ci: evals model-free (deterministico + coseno) su generazioni registrate — girano in CI",
     "eval: evals LIVE col modello reale + giudice LLM — solo in locale, esclusi di default",
+    "eval_live: evals LLM-as-a-judge sul motore pgvector V2 — solo in locale, richiede Ollama + Postgres con catalogo ingestito",
 ]
 filterwarnings = [
-    # ChromaDB usa asyncio.iscoroutinefunction (deprecata in 3.12+): è rumore di una
-    # libreria terza, non un bug nostro. Filtro mirato (non globale).
+    # Rumore da librerie terze — non sono bug nostri.
     "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning",
+    # testcontainers usa ResourceWarning per socket non chiusi in alcuni path di cleanup.
+    "ignore::ResourceWarning",
 ]
 
 [tool.coverage.run]

@@ -1,8 +1,14 @@
 """
 core/state.py
 -------------
-Single source of truth for the LangGraph shared state schema.
-Imported by graph.py and all agent nodes — never import graph.py from here.
+Single source of truth for the LangGraph shared state schema — V2.
+
+V2 changes vs V1
+----------------
+- LeadInfo → LeadContext (lead_id instead of id, raw_payload dict instead of raw_text)
+- LeadState → AgentState (new fields: messages, retrieved_docs, confidence_score, HITL, status)
+- sse_logs REMOVED (replaced by Postgres polling + structlog)
+- error → error_detail (renamed for clarity)
 """
 
 from __future__ import annotations
@@ -10,83 +16,89 @@ from __future__ import annotations
 import operator
 from typing import Annotated, Dict, List, Optional
 
+from langchain_core.documents import Document
+from langchain_core.messages import BaseMessage
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 
-class LeadInfo(BaseModel):
-    """Immutable lead payload received from the API layer."""
+class LeadContext(BaseModel):
+    """Immutable lead payload written by the API Ingestion layer. Read by all nodes."""
 
-    id: str = Field(..., description="Unique lead identifier (UUID or CRM ref).")
-    raw_text: str = Field(..., description="Unstructured input text from the lead.")
-    tenant_id: str = Field(..., description="Tenant identifier — scopes ChromaDB collection to catalogue_{tenant_id}.")
+    lead_id: str = Field(..., description="Unique lead identifier (UUID or CRM ref).")
+    tenant_id: str = Field(..., description="Tenant identifier — scopes pgvector queries.")
+    raw_payload: Dict = Field(
+        ...,
+        description="Raw text + optional CRM metadata. Key 'text' holds the lead body.",
+    )
+    metadata: Dict = Field(default_factory=dict, description="Optional CRM metadata.")
 
 
-class LeadState(TypedDict):
+class AgentState(TypedDict):
     """
-    Shared mutable state threaded through every LangGraph node.
+    Shared mutable state threaded through every LangGraph node — V2.
 
     Notes
     -----
-    - ``sse_logs`` uses ``operator.add`` as its reducer so that each node
-      *appends* to the list rather than replacing it (fan-in safe).
+    - ``messages`` uses ``operator.add`` as its reducer so nodes *append*
+      rather than replace (fan-in safe).
     - All other fields are last-write-wins (standard LangGraph default).
     """
 
-    lead_info: LeadInfo
-    """Original (immutable) lead data."""
+    # ── Initial Data ───────────────────────────────────────────────────────────
+    lead: LeadContext
+    """Written by: API Ingestion. Read by: all nodes."""
 
+    # ── LLM Conversational State ───────────────────────────────────────────────
+    messages: Annotated[List[BaseMessage], operator.add]
+    """Append-only message history (fan-in safe via operator.add)."""
+
+    # ── Multitenant RAG ────────────────────────────────────────────────────────
+    retrieved_docs: List[Document]
+    """Written by: MapperNode (pgvector). Read by: EvaluatorNode."""
+
+    # ── Flow Control & HITL ───────────────────────────────────────────────────
+    confidence_score: float
+    """Written by: EvaluatorNode. Read by: Router. Range [0.0, 1.0]."""
+
+    human_approved: Optional[bool]
+    """Written by: /approve endpoint. None = not yet reviewed."""
+
+    review_feedback: Optional[str]
+    """Written by: UI (if rejected). Injected into extractor prompt on resume."""
+
+    status: str
+    """Lifecycle: 'queued'|'processing'|'pending_review'|'completed'|'error'."""
+
+    error_detail: Optional[str]
+    """Written by: fallback handlers. Surfaced via /status polling."""
+
+    # ── Final Output (adapted from V1) ────────────────────────────────────────
     sanitized_text: str
-    """PII-masked version of raw_text produced by SanitizerNode."""
+    """PII-masked version of raw_payload['text'] produced by SanitizerNode."""
 
     extracted_services: List[str]
-    """Service names / keywords extracted by ExtractorNode (LLM output)."""
+    """Service names extracted by ExtractorNode (LLM output)."""
 
     mapped_services: List[Dict]
-    """
-    Price-list entries returned by MapperNode (ChromaDB lookup).
-    Each dict must contain at least ``{"service": str, "price": float}``.
-    """
+    """Price-list entries returned by MapperNode (pgvector lookup).
+    Each dict contains at least {'service': str, 'price': float}."""
 
     total_quote: float
     """Final summed quote computed by CalculatorNode (pure Python, no LLM)."""
 
     on_request_services: List[str]
-    """Service names with price=0.0 (da preventivare). Excluded from total_quote."""
+    """Service names with price=0.0 (to quote separately). Excluded from total_quote."""
 
     retry_count: int
     """Number of Extractor→Mapper retry iterations performed so far."""
 
-    sse_logs: Annotated[List[str], operator.add]
-    """
-    Append-only list of human-readable log lines streamed to the operator
-    via Server-Sent Events.  Uses operator.add so nodes can safely append
-    without clobbering concurrent writes.
-    """
-
-    error: Optional[str]
-    """Optional error message set when a node catches an unrecoverable exception."""
-
-    # ── Delivery fields (Fase 3) ──────────────────────────────────────────────
-
+    # ── Delivery fields ────────────────────────────────────────────────────────
     delivery_status: str
-    """
-    Lifecycle status written exclusively by delivery_node.
-    Values: "PENDING" (initial) | "SUCCESS" | "FAILED".
-    Read by ``route_after_delivery`` to decide retry vs. END.
-    """
+    """Lifecycle: 'PENDING'|'SUCCESS'|'FAILED'. Written by DeliveryNode."""
 
     delivery_attempts: int
-    """
-    Number of delivery attempts performed so far.
-    Incremented by delivery_node at the start of each attempt.
-    Read by ``route_after_delivery`` to enforce the max-retry cap.
-    Default: 0 (set in _make_initial_state).
-    """
+    """Number of delivery attempts. Incremented by DeliveryNode."""
 
     delivery_error: Optional[str]
-    """
-    Human-readable error message from the last failed delivery attempt.
-    None on success or before any attempt.  Surfaced in admin logs and
-    the final SSE ``done`` frame.
-    """
+    """Last delivery error message. None on success."""

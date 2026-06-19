@@ -1,6 +1,6 @@
-# AI Lead Qualifier
+# AI Lead Qualifier — V2 Enterprise
 
-> Microservizio backend B2B multi-tenant per la qualificazione automatica dei lead e la generazione di preventivi, basato su LLM locali (on-premise / air-gapped).
+> Microservizio backend B2B multi-tenant per la qualificazione automatica dei lead e la generazione di preventivi. Architettura asincrona (ARQ/Redis), LLM on-premise (air-gapped), RAG semantico (PostgreSQL + pgvector), persistenza LangGraph via `AsyncPostgresSaver`, migrazioni schema con Alembic, e logging strutturato via structlog.
 
 ---
 
@@ -8,52 +8,80 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Client / CRM                             │
-│          (HTTP JSON  ·  SSE stream  ·  Webhook)                 │
+│                        Client / UI / CRM                        │
+│       (HTTP JSON  ·  Polling API  ·  Webhook Delivery)          │
 └───────────────────────────┬─────────────────────────────────────┘
-                            │  JWT Bearer (HS256, per-tenant)
+                            │  JWT Bearer (RS256 asimmetrico)
                             ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    FastAPI  (ASGI / Uvicorn)                     │
-│   /qualify/stream  ·  /ingest/stream  ·  /ingest/{id}/approve   │
-│   /token  ·  /health                                            │
+│                    Traefik (TLS + Let's Encrypt)                 │
+└───────────────────────────┬─────────────────────────────────────┘
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    FastAPI  (ASGI / Uvicorn)                    │
+│   /lead (202)  ·  /status/{id}  ·  /lead/{id}/approve           │
 └──────────┬──────────────────────────────────┬───────────────────┘
-           │                                  │
+           │ Accoda Job (ARQ)                 │ Polling Stato
            ▼                                  ▼
-┌─────────────────────┐           ┌───────────────────────┐
-│  Qualification      │           │   Ingestion Engine    │
-│  Pipeline           │           │   (LangGraph)         │
-│  (LangGraph)        │           │                       │
-│                     │           │  chunker → normalizer │
-│  Sanitizer (PII)    │           │    → validator        │
-│  → Extractor (LLM)  │           │    → [HITL interrupt] │
-│  → Mapper (RAG)     │           │    → finalizer        │
-│  → Calculator       │           └──────────┬────────────┘
-│  → Delivery         │                      │
-└──────────┬──────────┘                      │
-           │                                 │ write
-           │  query                          ▼
-           └──────────────┐    ┌─────────────────────────┐
-                          ▼    │     ChromaDB             │
-              ┌───────────────────────────────────────┐  │
-              │  catalogue_{tenant_id}  (per tenant)  │◄─┘
-              └───────────────────────────────────────┘
-
-  Persistenza checkpoint:  SQLite  (AsyncSqliteSaver)
-  Inferenza LLM:           Ollama / LM Studio / vLLM  (OpenAI-compatible)
+┌─────────────────────┐           ┌───────────────────────────────┐
+│     Redis (ARQ)     │           │      PostgreSQL 16 + pgvector │
+│   Job Broker/Queue  │           │                               │
+└──────────┬──────────┘           │  • Checkpoint LangGraph       │
+           │                      │    (AsyncPostgresSaver)       │
+           ▼                      │  • Vector Store (pgvector)    │
+┌─────────────────────┐           │  • Schema gestito da Alembic  │
+│   ARQ Worker(s)     │           └───────────────▲───────────────┘
+│                     │                           │
+│  ┌───────────────┐  │      ┌────────────────────┴────────────┐
+│  │ LangGraph     │  │      │ Ollama / LLM Endpoint           │
+│  │ Sanitizer     │  │      │ (Generazione & Embedding)       │
+│  │ Extractor     ├──┼─────►│ host.docker.internal:11434      │
+│  │ Mapper (RAG)  │  │      └─────────────────────────────────┘
+│  │ Evaluator     │  │
+│  │ Calculator    │  │
+│  │ Delivery      │  │
+│  └───────────────┘  │
+└─────────────────────┘
 ```
 
-### Feature chiave
+---
 
-**Sicurezza JWT Multi-Tenant** — ogni richiesta porta un token JWT firmato con `JWT_SECRET_KEY`. Il claim `sub` determina il `tenant_id`, che scopa collezioni ChromaDB, upload, log e checkpoint. Zero mixing tra tenant a livello applicativo.
+## Feature principali V2
 
-**Ingestion con Human-in-the-Loop** — il grafo di ingestion si auto-sospende via `interrupt()` di LangGraph quando la confidenza media scende sotto 0.75 o almeno un item è flaggato. Il checkpoint viene persistito su SQLite; l'operatore riprende con `POST /ingest/{thread_id}/approve`.
+**Elaborazione asincrona (ARQ + Redis)**
+FastAPI risponde immediatamente `202 Accepted` e accoda il job in Redis. Il client fa polling su `/status/{id}`. Nessuna connessione HTTP bloccante, nessun SSE nella qualification flow.
 
-**Qualifica Lead RAG con thresholding semantico** — l'Extractor identifica i servizi richiesti via LLM, il Mapper li trova nel catalogo tenant via similarità coseno su ChromaDB. Match con distanza coseno superiore a `MAPPER_MAX_DISTANCE` (default `0.55` in `.env`) vengono scartati per evitare preventivi su servizi fuori catalogo. Se il mapping fallisce, il grafo ritenta fino a `MAX_RETRY_COUNT` volte con feedback negativo nel prompt; oltre soglia, escalation a fallback umano.
+**Ciclo di vita asincrono (lifespan FastAPI)**
+Lo startup esegue le operazioni critiche in sequenza rigorosa e senza race condition:
+1. Configurazione structured logging (structlog)
+2. Migrazioni Alembic (`alembic upgrade head`) — lo schema è sempre aggiornato prima della prima query
+3. Apertura pool asyncpg (query applicative + vector store)
+4. Inizializzazione `AsyncPostgresSaver` (LangGraph checkpointer su Postgres via psycopg3)
+5. Compilazione grafi LangGraph (singleton thread-safe, riutilizzati per ogni richiesta)
+6. Apertura pool Redis ARQ (enqueue job)
 
-**Preservazione della lingua nel prompt dell'Extractor** — il system prompt dell'Extractor impone esplicitamente di mantenere la lingua originale della richiesta del lead (italiano → estrae in italiano, inglese → estrae in inglese). Questo abbassa drasticamente la distanza coseno nel Mapper quando il catalogo è scritto in una lingua diversa da quella dominante del modello LLM (es. Qwen/Llama che tendono a ragionare in inglese su cataloghi in italiano).
+Lo shutdown chiude le risorse in ordine inverso. Il worker ARQ è un processo separato che usa lo stesso checkpointer.
 
-**Delivery Layer a plugin** — il `BaseDeliveryAdapter` disaccoppia la consegna del preventivo: `ConsoleAdapter` in sviluppo, `WebhookAdapter` (httpx async, retry gestito dallo stato LangGraph) in produzione. La `factory` è il solo punto da estendere per aggiungere canali.
+**Schema e Migrazioni (Alembic)**
+Il DB schema è versionato con Alembic. Le migration vengono applicate automaticamente all'avvio del backend via `asyncio.to_thread` (non bloccante). Non è necessario eseguirle manualmente. I file di migrazione si trovano in `backend/migrations/`.
+
+**RAG Enterprise su PostgreSQL (pgvector)**
+ChromaDB sostituito da Postgres con estensione pgvector: gestione robusta, transazionale e scalabile. Il catalogo servizi viene vettorializzato e archiviato con isolamento multi-tenant nativo SQL (`WHERE tenant_id = $1`). La dimensione del vettore è configurabile via `PGVECTOR_EMBEDDING_DIM` (default: 768 per `nomic-embed-text`).
+
+**JWT RS256 asimmetrico**
+Autenticazione con chiavi RSA pubbliche/private. I microservizi validano i token con la sola chiave pubblica, senza condividere il segreto di firma. In produzione: `TOKEN_ENDPOINT_ENABLED=false` disabilita l'endpoint `/token`.
+
+**Human-in-the-Loop (HITL) adattivo**
+Un `EvaluatorNode` calcola dinamicamente un confidence score per ogni lead. Se scende sotto soglia (match semantici poveri o max retries superati), il worker sospende l'esecuzione e scrive il checkpoint su Postgres. L'operatore sblocca il flusso tramite `POST /lead/{id}/approve`. Il worker ARQ riprende dall'esatto punto di interruzione.
+
+**Logging strutturato (structlog)**
+Tutti i log sono emessi in formato JSON strutturato via structlog. Ogni evento include campi come `event`, `tenant_id`, `thread_id`, `error`. Nessuna PII viene scritta nei log. I log sono integrabili nativamente con Promtail → Loki → Grafana.
+
+**ARQ Worker configurabile per GPU**
+La concorrenza del worker è controllata da `ARQ_MAX_JOBS` (default: 1 per GPU condivisa con LLM 14B). Il timeout per job è configurabile via `ARQ_JOB_TIMEOUT` (default: 300s).
+
+**Osservabilità (PLG Stack)**
+Stack opzionale (Promtail + Loki + Grafana) attivabile via `docker-compose.obs.yml`.
 
 ---
 
@@ -61,219 +89,207 @@
 
 ```
 ai_lead_qualifier/
-├── .env.example          # template variabili d'ambiente (copia in .env)
-├── .gitignore
-├── Makefile              # comandi make: test, cov, lint, eval-*
-├── README.md
-│
-├── backend/              # tutto il codice Python
-│   ├── main.py           # entrypoint FastAPI / Uvicorn
+├── backend/
+│   ├── main.py              # Entrypoint FastAPI + lifespan (startup/shutdown)
+│   ├── alembic.ini          # Configurazione Alembic
+│   ├── migrations/          # Script di migrazione DB (env.py + versioni)
 │   ├── api/
-│   │   ├── routes.py     # endpoint REST + SSE
-│   │   └── security.py   # JWT dependency injection
+│   │   ├── routes.py        # Endpoint REST e Dependency Injection
+│   │   └── dependencies.py  # JWT RS256, get_redis(), get_graph()
 │   ├── core/
-│   │   ├── config.py     # Settings (pydantic-settings, carica .env)
-│   │   ├── graph.py      # grafo LangGraph della qualification pipeline
-│   │   └── state.py      # LeadState TypedDict
-│   ├── agents/           # nodi del grafo di qualifica
-│   │   ├── sanitizer.py
-│   │   ├── extractor.py
-│   │   ├── mapper.py
-│   │   ├── calculator.py
-│   │   └── delivery.py
-│   ├── ingestion/        # grafo LangGraph di ingestion
-│   │   ├── graph.py
-│   │   └── models.py     # ServiceItem (schema canonico Pydantic)
-│   ├── adapters/         # delivery adapter pattern
-│   │   ├── base.py
-│   │   ├── console.py
-│   │   ├── webhook.py
-│   │   └── factory.py
-│   ├── tests/
-│   │   ├── unit/         # test puri, nessuna I/O
-│   │   ├── integration/  # grafo/API con LLM e ChromaDB mockati
-│   │   └── evals/        # piramide eval: CI (deterministico) + LIVE (LLM)
-│   ├── requirements.txt
-│   ├── requirements-dev.txt
-│   ├── requirements-ci.txt
-│   └── pyproject.toml    # configurazione pytest, coverage, ruff, mypy
-│
-└── frontend/             # UI operatore (Vite + Alpine.js + Tailwind)
-    ├── src/
-    └── ...
+│   │   ├── config.py        # Settings Pydantic (lru_cache singleton)
+│   │   ├── state.py         # AgentState e LeadContext (TypedDict)
+│   │   ├── graph.py         # Build/init LangGraph + get_checkpointer()
+│   │   └── logging_setup.py # Configurazione structlog
+│   ├── database/
+│   │   ├── db_core.py       # Pool asyncpg (get_pool / close_pool)
+│   │   └── vector_store.py  # Wrapper pgvector (upsert, search, wipe_tenant)
+│   ├── worker/
+│   │   ├── worker_settings.py # ARQ WorkerSettings (max_jobs, timeout, funzioni)
+│   │   └── tasks.py           # Task ARQ: run_qualification_task, resume, ingestion
+│   ├── agents/              # Nodi LangGraph (Sanitizer, Extractor, Mapper, Evaluator…)
+│   ├── ingestion/           # Grafo e modelli per l'ingestion del catalogo
+│   ├── services/
+│   │   └── embeddings.py    # OllamaEmbeddings wrapper
+│   └── tests/               # Unit, Integration (Testcontainers) ed Evals
+├── frontend/                # UI Operatore — Vite + Alpine.js + Tailwind + Poller
+├── keys/                    # Chiavi RSA (da generare) public.pem / private.pem
+├── docker-compose.dev.yml   # Sviluppo: live reload, porte DB/Redis esposte
+├── docker-compose.prod.yml  # Produzione: Traefik, rete isolata, TLS automatico
+├── docker-compose.obs.yml   # Osservabilità: Loki, Grafana, Promtail
+└── docs/RUNBOOK.md          # Procedure operative (rollback, incident response)
 ```
 
 ---
 
-## Guida allo sviluppo
+## Sviluppo locale
 
-### Prerequisiti
+### 1. Setup iniziale
 
-- Python 3.11+
-- [Ollama](https://ollama.com) con un modello scaricato (es. `ollama pull llama3`)
-- [ChromaDB](https://www.trychroma.com) in modalità server
-
-### Setup iniziale
+Copia il template dell'ambiente e genera le chiavi RSA per il JWT:
 
 ```bash
-# 1. Configura le variabili d'ambiente
 cp .env.example .env
-# Modifica .env: URL LLM, JWT_SECRET_KEY, porte, ecc.
 
-# 2. Installa le dipendenze Python
-make install          # dipendenze complete (sviluppo locale)
-# oppure:
-make install-ci       # dipendenze minime per CI (no llama-cpp/groq)
+mkdir -p backend/keys
+openssl genrsa -out backend/keys/private.pem 2048
+openssl rsa -in backend/keys/private.pem -outform PEM -pubout -out backend/keys/public.pem
 ```
 
-### Avvio dei servizi
+### 2. Avvio
 
 ```bash
-# ChromaDB server (porta 8001, come da .env.example)
-chroma run --host localhost --port 8001
-
-# Ollama
-ollama serve
-
-# FastAPI
-cd backend && python main.py
-# Swagger UI: http://localhost:8000/docs
-# Health check: http://localhost:8000/health
+docker compose -f docker-compose.dev.yml up -d --build
 ```
 
-### Eseguire i test
+All'avvio il backend esegue automaticamente le migrazioni Alembic prima di servire traffico. Nei log vedrai la sequenza:
 
-```bash
-make test             # unit + integration + evals CI (~30s, no LLM reale)
-make cov              # stessa suite con report di copertura
-make eval-local       # evals LIVE con modello reale (richiede Ollama attivo)
-make eval-snapshot    # rigenera gli snapshot dopo modifiche a prompt/modello
-make lint             # ruff + mypy
-make check            # lint + test (gate da eseguire prima di ogni PR)
+```
+startup.begin
+alembic.migrations_applied
+startup.asyncpg_pool_ready
+startup.graphs_compiled
+startup.arq_pool_ready
 ```
 
-La suite si divide in tre livelli:
+| Servizio | URL |
+|---|---|
+| Frontend UI | http://localhost |
+| Backend API (Swagger) | http://localhost:8000/docs |
+| PostgreSQL | localhost:5432 |
+| Redis | localhost:6379 |
 
-- **Unit** (`tests/unit/`) — test puri, nessuna I/O, veloci.
-- **Integration** (`tests/integration/`) — grafo LangGraph e API con LLM e ChromaDB mockati.
-- **Evals** (`tests/evals/`) — due binari: CI (deterministico, coseno su snapshot registrati) e LIVE (giudice LLM, solo locale con `make eval-local`).
+> **Live reload**: modifiche ai file in `backend/` riavviano automaticamente Uvicorn e il Worker ARQ grazie ai volumi montati.
 
-Gli snapshot in `tests/evals/snapshots/` vanno versionati; rigenerarli solo dopo modifiche intenzionali a prompt o modello.
-
-### Ottenere un token JWT (sviluppo)
+### 3. Test
 
 ```bash
-# Genera un token per il tenant "acme" via endpoint /token
-curl -X POST http://localhost:8000/token \
-  -H "Content-Type: application/json" \
-  -d '{"tenant_id": "acme"}'
+make install          # Installa dipendenze di sviluppo nel venv locale
+make test             # Unit + Integration (Testcontainers per Postgres/Redis)
+make eval-local       # Evals LIVE con modello LLM reale (richiede Ollama sull'host)
 ```
 
 ---
 
-## API — Endpoint principali
+## API
+
+Tutti gli endpoint (eccetto `/health` e `/token`) richiedono `Authorization: Bearer <RS256_JWT>`.
+
+### Lead Qualification (flusso asincrono)
 
 | Metodo | Path | Descrizione |
-|--------|------|-------------|
-| `POST` | `/token` | Genera un JWT per `tenant_id` (helper sviluppo) |
-| `GET`  | `/health` | Health check |
-| `POST` | `/qualify/stream` | Qualifica un lead, risposta SSE in real-time |
-| `POST` | `/qualify` | Qualifica un lead, risposta JSON sincrona |
-| `POST` | `/ingest/stream` | Carica e normalizza un catalogo, risposta SSE |
-| `POST` | `/ingest/{thread_id}/approve` | Riprende un'ingestion sospesa (HITL) |
+|---|---|---|
+| `POST` | `/lead` | Accoda un lead testuale. Restituisce `202 Accepted` + `thread_id`. |
+| `GET` | `/status/{thread_id}` | Polling stato job: `queued` → `processing` → `pending_review` / `completed` / `error`. |
+| `POST` | `/lead/{thread_id}/approve` | Sblocca un job `pending_review` (flusso HITL). |
 
-Tutti gli endpoint tranne `/token` e `/health` richiedono `Authorization: Bearer <jwt>`.
+### Catalogue Ingestion
+
+| Metodo | Path | Descrizione |
+|---|---|---|
+| `POST` | `/upload` | Carica un file catalogo (CSV/JSON/XLSX). Restituisce il path server-side. |
+| `POST` | `/ingest/stream` | Avvia l'ingestion via SSE. Emette `log`, `interrupt`, `done`, `error`. |
+| `POST` | `/ingest/{thread_id}/approve` | Conferma o rifiuta l'ingestion dopo un interrupt HITL. |
+
+### Tenant & Admin
+
+| Metodo | Path | Descrizione |
+|---|---|---|
+| `GET` | `/tenants/{id}/profile` | Legge il profilo aziendale del tenant. |
+| `PUT` | `/tenants/{id}/profile` | Aggiorna il profilo aziendale. |
+| `DELETE` | `/api/v1/tenants/{id}/vector-data` | Hard reset dati vettoriali di un tenant (pgvector). |
+
+### Ops
+
+| Metodo | Path | Descrizione |
+|---|---|---|
+| `POST` | `/token` | *(Solo dev)* Genera un JWT RS256. Disabilitare in produzione. |
+| `GET` | `/health` | Healthcheck — verifica connettività Postgres. Restituisce `503` se il pool non è disponibile. |
 
 ---
 
-## 🐳 Deploy in Produzione (Docker)
-
-L'intero sistema è pronto per essere eseguito in un Private Cloud o su qualsiasi server dotato di Docker, garantendo il 100% di parità di ambiente.
-
-### Prerequisiti
-
-- Docker e Docker Compose installati sul server.
-- Un file `.env` configurato nella radice del progetto (vedi `.env.example`).
-
-### Avvio del Cluster
-
-Lancia questo comando dalla radice del progetto:
+## Test E2E rapido (cURL)
 
 ```bash
-docker compose up --build -d
+# 1. Health check
+curl http://localhost:8000/health
+
+# 2. Ottieni JWT (dev only)
+TOKEN=$(curl -s -X POST http://localhost:8000/token \
+  -H "Content-Type: application/json" \
+  -d '{"username": "tenant_test"}' | jq -r '.access_token')
+
+# 3. Invia lead → 202 + thread_id
+THREAD=$(curl -s -X POST http://localhost:8000/lead \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"raw_text": "Consulenza IT per migrazione cloud di 50 server e supporto continuativo 12 mesi."}' \
+  | jq -r '.thread_id')
+
+# 4. Polling status (ripeti finché non esce da "queued"/"processing")
+curl -s "http://localhost:8000/status/$THREAD" \
+  -H "Authorization: Bearer $TOKEN" | jq '{status: .status, result: .result}'
+
+# 5. Approva se pending_review
+curl -s -X POST "http://localhost:8000/lead/$THREAD/approve" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"approved": true}'
 ```
 
-Questo accenderà 3 container isolati su una rete privata interna:
+---
 
-1. **vectordb** — il database vettoriale ChromaDB (porta non esposta all'esterno).
-2. **backend** — il motore FastAPI / LangGraph (porta non esposta all'esterno).
-3. **frontend** — un server Nginx ultra-leggero che serve la UI e fa da reverse proxy verso il backend.
+## Deploy in produzione
 
-### Accesso
+L'architettura di produzione chiude tutte le porte dirette. Solo Traefik è esposto pubblicamente (80/443) con TLS automatico via Let's Encrypt.
 
-Una volta avviato, l'interfaccia sarà disponibile all'indirizzo:
-
-👉 **http://localhost:8080** (o l'IP del tuo server)
-
-Il backend non è esposto direttamente: tutte le chiamate API passano in modo sicuro attraverso Nginx. Per il login, usa qualsiasi stringa come username (es. `cliente_acme_01`) — il sistema è configurato con autenticazione JWT mock; vedi `backend/api/security.py` per integrare un Identity Provider reale.
-
-### Comandi utili
+> **Nota:** `docker-compose.prod.yml` è pensato per girare su un server **Linux**. Su macOS Docker Desktop il provider Docker di Traefik non funziona correttamente — usa `docker-compose.dev.yml` per lo sviluppo locale.
 
 ```bash
-# Avvia in background
-docker compose up --build -d
+# Solo stack applicativo
+docker compose -f docker-compose.prod.yml up -d --build
 
-# Visualizza i log in tempo reale
-docker compose logs -f
-
-# Ferma tutto (i dati nei volumi vengono conservati)
-docker compose down
-
-# Ferma tutto E cancella i volumi (ChromaDB, SQLite, upload)
-docker compose down -v
+# Con osservabilità (Loki + Grafana + Promtail)
+docker compose -f docker-compose.prod.yml -f docker-compose.obs.yml up -d
 ```
 
-### Persistenza dei dati
+Grafana sarà disponibile su `http://localhost:3000` (credenziali: `admin` / `admin`).
 
-I dati sopravvivono ai restart grazie a tre volumi Docker gestiti automaticamente:
+---
 
-| Volume | Contenuto |
-|--------|-----------|
-| `chroma_data` | Embedding vettoriali del catalogo (ChromaDB) |
-| `sqlite_data` | Checkpoint LangGraph (thread di qualifica e ingestion) |
-| `uploads_data` | File CSV/JSON/XLSX caricati dai tenant |
+## Variabili d'ambiente (`.env`)
 
-### Variabili d'ambiente chiave
-
-| Variabile | Default | Descrizione |
-|-----------|---------|-------------|
-| `MAPPER_MAX_DISTANCE` | `0.55` | Soglia distanza coseno: match scartati se distanza > valore. Valori più bassi = più restrittivo; consigliato 0.55 per cataloghi multilingua o con sinonimi. |
-| `INGESTION_CHUNK_SIZE` | `10` | Righe per batch nel normalizer. Valori bassi (5–10) per LLM locali con limite di token. |
-| `JWT_SECRET_KEY` | — | Segreto HMAC per la firma dei JWT. Obbligatorio in produzione. |
-| `LLM_BASE_URL` | `http://host.docker.internal:11434/v1` | Endpoint OpenAI-compatible del modello locale (Ollama/LM Studio/vLLM). |
-
-### Nota per server Linux
-
-Se esegui i container su un server Linux e il tuo modello Ollama si trova sull'host (non in Docker), decommenta le righe `extra_hosts` nel `docker-compose.yml` per permettere al backend di risolvere `host.docker.internal`:
-
-```yaml
-extra_hosts:
-  - "host.docker.internal:host-gateway"
-```
+| Variabile | Descrizione | Default dev |
+|---|---|---|
+| `DATABASE_DSN` | Connection string Postgres (asyncpg) | `postgresql://app:password@postgres/ai_lead_qualifier` |
+| `REDIS_DSN` | Connection string Redis (ARQ) | `redis://redis:6379` |
+| `JWT_PUBLIC_KEY_PATH` | Path a `public.pem` per validare i token | `keys/public.pem` |
+| `JWT_PRIVATE_KEY_PATH` | Path a `private.pem` (solo `/token` dev) | `keys/private.pem` |
+| `TOKEN_ENDPOINT_ENABLED` | Abilita `POST /token`. **Impostare `false` in prod.** | `true` |
+| `LLM_BASE_URL` | Endpoint OpenAI-compatible | `http://host.docker.internal:11434/v1` |
+| `LLM_MODEL_NAME` | Modello LLM | `llama3` |
+| `EMBEDDING_BASE_URL` | Endpoint Ollama per embedding | `http://host.docker.internal:11434` |
+| `EMBEDDING_MODEL` | Modello embedding | `nomic-embed-text` |
+| `PGVECTOR_EMBEDDING_DIM` | Dimensione vettore (deve coincidere col modello) | `768` |
+| `ARQ_MAX_JOBS` | Concorrenza worker (1 per GPU condivisa) | `1` |
+| `ARQ_JOB_TIMEOUT` | Timeout singolo job ARQ (secondi) | `300` |
+| `CORS_ORIGINS` | Origini CORS ammesse (JSON array) | `["http://localhost"]` |
+| `ACME_EMAIL` | Email Let's Encrypt (solo prod) | — |
+| `API_DOMAIN` | Dominio pubblico API (solo prod) | — |
 
 ---
 
 ## Stack tecnologico
 
 | Ambito | Tecnologia |
-|--------|-----------|
-| Web framework | FastAPI + Uvicorn (ASGI), SSE via `StreamingResponse` |
-| Orchestrazione agenti | LangGraph (`StateGraph`, `interrupt()`, `AsyncSqliteSaver`) |
-| Database vettoriale | ChromaDB `0.5.3` (Client/Server, `HttpClient`) — versione client pinnata in `requirements.txt` per compatibilità con l'immagine Docker |
-| Validazione & config | Pydantic v2 + `pydantic-settings` |
-| Inferenza LLM | Ollama / LM Studio / vLLM (OpenAI-compatible); fallback Groq |
-| HTTP client async | httpx |
-| Persistenza checkpoint | SQLite via `aiosqlite` (`AsyncSqliteSaver`) |
-| Autenticazione | JWT HS256 (`PyJWT`) |
-| Testing | pytest, pytest-asyncio, ruff, mypy |
+|---|---|
+| Web Framework | FastAPI + Uvicorn (ASGI) |
+| Agent Orchestration | LangGraph (StateGraph, `interrupt()`, `AsyncPostgresSaver`) |
+| Persistence & Vector DB | PostgreSQL 16 + pgvector + asyncpg |
+| Schema Migrations | Alembic (applicato automaticamente allo startup) |
+| Task Queue | ARQ + Redis 7 |
+| LLM Inference | Ollama / LM Studio / vLLM (OpenAI-compatible) |
+| Auth & Security | PyJWT (RS256 asimmetrico, chiavi PEM) |
+| Observability | structlog (JSON structured logging) + Promtail + Loki + Grafana |
 | Frontend | Vite + Alpine.js + Tailwind CSS |
+| Testing | pytest + Testcontainers (Postgres, Redis) |

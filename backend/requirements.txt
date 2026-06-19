@@ -1,35 +1,45 @@
 # ── Web framework ─────────────────────────────────────────────────────────────
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
-python-multipart>=0.0.9        # form data support
+python-multipart>=0.0.9
 
 # ── LangGraph + LangChain ─────────────────────────────────────────────────────
-langgraph>=0.2.0               # StateGraph, SqliteSaver, interrupt()
-langgraph-checkpoint-sqlite>=1.0.0  # AsyncSqliteSaver (estratto dal core in LangGraph>=0.2)
-langchain-core>=0.2.0          # base message / runnable primitives
+langgraph>=0.2.0
+langgraph-checkpoint-postgres>=0.1.0   # AsyncPostgresSaver (replaces sqlite in V2)
+langchain-core>=0.2.0
 
-# ── LLM backends (install ONE depending on deployment) ───────────────────────
-# Local air-gapped (Llama GGUF):
-llama-cpp-python>=0.2.80       # pip install llama-cpp-python --upgrade
-# Groq API fallback (comment out if fully air-gapped):
+# ── LLM backends ──────────────────────────────────────────────────────────────
+llama-cpp-python>=0.2.80
 groq>=0.9.0
+langchain-community>=0.2.0
+langchain-ollama>=0.1.0                # OllamaEmbeddings (sostituisce langchain_community)
 
-# ── Vector DB ────────────────────────────────────────────────────────────────
-chromadb==0.5.3                # pinned to match chromadb/chroma:0.5.3 Docker image
-httpx>=0.27.0                  # async HTTP client (used by extractor OpenAI-compat adapter)
+# ── Async HTTP ────────────────────────────────────────────────────────────────
+httpx>=0.27.0
+
+# ── PostgreSQL + pgvector (V2) ────────────────────────────────────────────────
+asyncpg>=0.29.0
+pgvector>=0.2.0                        # Python type hints for pgvector
+
+# ── Redis / ARQ task queue (V2) ───────────────────────────────────────────────
+arq>=0.26.0
+redis>=5.0.0
+
+# ── Structured logging (V2) ───────────────────────────────────────────────────
+structlog>=24.0.0
 
 # ── Settings & validation ─────────────────────────────────────────────────────
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
 
-# ── Auth / JWT ────────────────────────────────────────────────────────────────
+# ── Auth / JWT RS256 (V2) ─────────────────────────────────────────────────────
 PyJWT>=2.8.0
+cryptography>=42.0.0                   # RSA key loading for JWT RS256
 
-# ── Persistence ───────────────────────────────────────────────────────────────
-aiosqlite>=0.20.0              # async SQLite driver for AsyncSqliteSaver
-# For production AsyncPostgresSaver (future):
-# langgraph-checkpoint-postgres>=0.1.0
-# asyncpg>=0.29.0
+# ── Migrazioni DB (V2) ───────────────────────────────────────────────────────
+alembic>=1.13.0
+sqlalchemy>=2.0.0                      # usato solo da alembic/env.py (non ORM runtime)
+psycopg2-binary>=2.9.0                 # driver sincrono per Alembic (asyncpg resta per runtime)
 
 # ── Testing ───────────────────────────────────────────────────────────────────
 pytest>=8.2.0
@@ -37,5 +47,5 @@ pytest-asyncio>=0.23.0
 pytest-mock>=3.14.0
 
 # ── Dev / quality ─────────────────────────────────────────────────────────────
-ruff>=0.4.0                    # linter + formatter
-mypy>=1.10.0                   # static type checker
+ruff>=0.4.0
+mypy>=1.10.0

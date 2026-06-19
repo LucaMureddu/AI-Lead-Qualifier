@@ -18,3 +18,4 @@ pytest-mock>=3.14.0
 pytest-cov>=5.0.0          # coverage report (pytest --cov)
 respx>=0.21.0             # mock di httpx (extractor OpenAI-compat / webhook)
 anyio>=4.0.0             # utility async per i test
+testcontainers[postgres]>=4.7.0  # container Postgres+pgvector per test di integrazione vector_store

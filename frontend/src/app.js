@@ -96,38 +96,15 @@ const App = {
 
   // ── FASE 2: qualificazione lead ──────────────────────────────────────────────
   async generateQuote() {
-    const conn = store("connection");
     const s = store("qualify");
-    const text = s.inputText.trim();
-    if (text.length < MIN_RAW_TEXT) {
-      s.error = `Inserisci almeno ${MIN_RAW_TEXT} caratteri.`;
+    const token = store("auth").token;
+    // Validation is handled by canSubmit, but guard here too.
+    if (s.inputText.trim().length < MIN_RAW_TEXT) {
+      s.errorDetail = `Inserisci almeno ${MIN_RAW_TEXT} caratteri.`;
       return;
     }
-    s.isLoading = true;
-    s.reset();
-    try {
-      await api.qualifyStream(
-        { raw_text: text },
-        {
-          onEvent: (f) => {
-            if (f.event === "log") {
-              s.logs.push(f.data);
-            } else if (f.event === "done") {
-              const d = safeParse(f.data) || {};
-              if (d.error) s.error = d.error;
-              s.result = d;
-              if (!s.recipientEmail) s.recipientEmail = quote.extractEmail(s.inputText);
-            } else if (f.event === "error") {
-              s.error = safeParse(f.data)?.error || f.data || "Errore sconosciuto.";
-            }
-          },
-        }
-      );
-    } catch (e) {
-      s.error = e.message;
-    } finally {
-      s.isLoading = false;
-    }
+    // V2: delegate entirely to the store, which manages status + Poller lifecycle.
+    await s.submitLead(token);
   },
 
   // ── Preventivo condivisibile (email / PDF) ───────────────────────────────────

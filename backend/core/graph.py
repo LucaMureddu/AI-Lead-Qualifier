@@ -1,7 +1,7 @@
 """
 core/graph.py
 -------------
-LangGraph orchestration layer.
+LangGraph orchestration layer — V2.
 
 Topology
 --------
@@ -9,71 +9,98 @@ Topology
        │
   ExtractorNode  ◄──────────────────────────────────────────┐
        │                                                     │ retry (retry_count < max)
-  MapperNode ──── mapping_ok ──► CalculatorNode             │
-       │                         │                          │
-       │                    DeliveryNode ◄──────────────────┼── retry (delivery_attempts < max)
-       │                         │                          │
-       │                    SUCCESS → END                   │
-       │                    FAILED & attempts >= max → END  │
+  MapperNode                                                 │
+       │                                                     │
+  EvaluatorNode ── score >= 0.75 ──► CalculatorNode         │
+       │                              │                      │
+       │                         DeliveryNode ◄─────────────┼── retry (attempts < max)
+       │                              │                      │
+       │                         SUCCESS → END              │
        │                                                    │
-       └──── mapping_failed & retry_count < max ───────────┘
+       ├── score < 0.75 & retry_count < max ───────────────┘
        │
-       └──── mapping_failed & retry_count == max ──► HumanFallbackNode
+       └── score < 0.75 & retry_count == max ──► hitl_interrupt (pending_review)
 
-Persistence: AsyncSqliteSaver for async-native checkpointing (interrupt/resume support).
+V2 changes vs V1
+----------------
+- AsyncSqliteSaver → AsyncPostgresSaver (Postgres checkpointing)
+- Added EvaluatorNode + route_after_evaluator (confidence-based HITL)
+- State type: LeadState → AgentState
+- human_fallback_node now sets status='pending_review' (not just interrupt)
+
+Why setup() is kept (not removed in favour of Alembic)
+-------------------------------------------------------
+Alembic manages the *application* schema (catalogue_items — see 001_initial_schema.py).
+AsyncPostgresSaver.setup() manages the *LangGraph* schema (checkpoints,
+checkpoint_blobs, checkpoint_writes, checkpoint_migrations).
+
+Encoding those tables in an Alembic migration would couple our migration
+files to LangGraph's internal schema version — a maintenance trap.  We let
+the library own its schema and call setup() once at startup instead.
+
+setup() is idempotent for the table DDL (uses IF NOT EXISTS) but inserts a
+row into checkpoint_migrations on every call.  When multiple instances start
+simultaneously (rolling deploy), only the first INSERT succeeds; the others
+hit UniqueViolation.  We catch that specific exception via the psycopg3
+type rather than fragile string matching.
 """
 
 from __future__ import annotations
 
-import logging
+from contextlib import AsyncExitStack
 from typing import Literal
 
-import aiosqlite
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+import structlog
+from psycopg.errors import UniqueViolation
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import interrupt
 
 from agents.calculator import calculator_node
 from agents.delivery import delivery_node
+from agents.evaluator import evaluator_node
 from agents.extractor import extractor_node
 from agents.mapper import mapper_node
 from agents.sanitizer import sanitizer_node
 from core.config import get_settings
-from core.state import LeadState
+from core.state import AgentState
 
-logger: logging.Logger = logging.getLogger(__name__)
+log = structlog.get_logger()
+
 
 # ── Routing helpers ───────────────────────────────────────────────────────────
 
-def route_after_mapper(state: LeadState) -> Literal["calculator", "extractor", "human_fallback"]:
+
+def route_after_evaluator(
+    state: AgentState,
+) -> Literal["calculator", "extractor", "hitl_interrupt"]:
     """
-    Conditional edge executed after MapperNode.
+    Conditional edge executed after EvaluatorNode.
 
     Decision matrix:
-    ┌──────────────────────────────┬───────────────────────────────────┐
-    │ mapped_services non-empty    │ → CalculatorNode                  │
-    │ empty & retry_count < max    │ → ExtractorNode (retry loop)      │
-    │ empty & retry_count == max   │ → HumanFallbackNode               │
-    └──────────────────────────────┴───────────────────────────────────┘
+    ┌──────────────────────────────────────┬────────────────────────────────┐
+    │ confidence_score >= 0.75             │ → CalculatorNode               │
+    │ score < 0.75 & retry_count < max    │ → ExtractorNode (retry)        │
+    │ score < 0.75 & retry_count == max   │ → hitl_interrupt (HITL)        │
+    └──────────────────────────────────────┴────────────────────────────────┘
     """
     settings = get_settings()
+    score: float = state.get("confidence_score", 0.0)
+    retry: int = state.get("retry_count", 0)
 
-    if len(state.get("mapped_services", [])) >= settings.mapper_min_results:
-        logger.debug("route_after_mapper → calculator")
+    if score >= 0.75:
+        log.debug("route.evaluator", next="calculator", score=round(score, 3))
         return "calculator"
 
-    retry_count: int = state.get("retry_count", 0)
-    if retry_count < settings.max_retry_count:
-        logger.debug("route_after_mapper → extractor (retry #%d)", retry_count)
+    if retry < settings.max_retry_count:
+        log.debug("route.evaluator", next="extractor", retry=retry, score=round(score, 3))
         return "extractor"
 
-    logger.warning("route_after_mapper → human_fallback (exhausted retries)")
-    return "human_fallback"
+    log.warning("route.evaluator", next="hitl_interrupt", score=round(score, 3), retries=retry)
+    return "hitl_interrupt"
 
 
-# ── Delivery router ──────────────────────────────────────────────────────────
-
-def route_after_delivery(state: LeadState) -> Literal["delivery", "__end__"]:
+def route_after_delivery(state: AgentState) -> Literal["delivery", "__end__"]:
     """
     Conditional edge executed after DeliveryNode.
 
@@ -83,105 +110,183 @@ def route_after_delivery(state: LeadState) -> Literal["delivery", "__end__"]:
     │ FAILED & delivery_attempts < max        │ → DeliveryNode (retry)       │
     │ FAILED & delivery_attempts >= max       │ → END (log abandonment)      │
     └─────────────────────────────────────────┴──────────────────────────────┘
-
-    The ceiling is read from ``settings.delivery_max_attempts`` (default 3)
-    so it can be tuned via environment variable without code changes.
     """
     settings = get_settings()
     status: str = state.get("delivery_status", "PENDING")
     attempts: int = state.get("delivery_attempts", 0)
 
     if status == "SUCCESS":
-        logger.debug("route_after_delivery → END (success)")
+        log.debug("route.delivery", next="end", status="success")
         return "__end__"
 
     if attempts < settings.delivery_max_attempts:
-        logger.warning(
-            "route_after_delivery → delivery (retry #%d of %d)",
-            attempts,
-            settings.delivery_max_attempts,
+        log.warning(
+            "route.delivery",
+            next="delivery",
+            attempt=attempts,
+            max_attempts=settings.delivery_max_attempts,
         )
         return "delivery"
 
-    logger.error(
-        "route_after_delivery → END (abandoned after %d/%d attempts)",
-        attempts,
-        settings.delivery_max_attempts,
+    log.error(
+        "route.delivery",
+        next="end",
+        reason="abandoned",
+        attempts=attempts,
+        max_attempts=settings.delivery_max_attempts,
     )
     return "__end__"
 
 
-# ── Human-fallback node ───────────────────────────────────────────────────────
+# ── HITL interrupt node ───────────────────────────────────────────────────────
 
-def human_fallback_node(state: LeadState) -> LeadState:
+
+def hitl_interrupt_node(state: AgentState) -> dict:
     """
     Suspends graph execution via LangGraph interrupt().
-    An operator can inspect the state and resume by calling the graph
-    with an updated state (e.g. manually providing mapped_services).
 
-    NOTE: interrupt() raises an internal LangGraph exception that signals
-    the runtime to pause and persist the current checkpoint.
+    Sets status='pending_review' so the /status polling endpoint can surface
+    the review payload to the operator. The operator calls /lead/{id}/approve
+    to inject human_approved + resume the graph.
+
+    interrupt() never returns — it suspends the graph at this node and persists
+    the checkpoint in Postgres for later resumption.
     """
-    lead_id: str = state["lead_info"].id
-    logger.warning("HumanFallbackNode activated for lead_id=%s", lead_id)
-
-    sse_log_entry: str = (
-        f"[HUMAN_FALLBACK] Lead {lead_id} requires manual review. "
-        "Automatic mapping failed after max retries."
+    lead_id: str = state["lead"].lead_id
+    tenant_id: str = state["lead"].tenant_id
+    log.warning(
+        "hitl_interrupt.activated",
+        lead_id=lead_id,
+        tenant_id=tenant_id,
+        confidence_score=state.get("confidence_score", 0.0),
     )
-    # interrupt() never returns; it suspends the graph at this node.
-    interrupt(value={"lead_id": lead_id, "message": sse_log_entry})
 
-    # Unreachable — satisfies type checker.
-    return {**state, "sse_logs": [sse_log_entry]}  # type: ignore[return-value]
+    review_payload = {
+        "lead_id": lead_id,
+        "tenant_id": tenant_id,
+        "confidence_score": state.get("confidence_score", 0.0),
+        "extracted_services": state.get("extracted_services", []),
+        "mapped_services": state.get("mapped_services", []),
+    }
+
+    # interrupt() raises internally — suspends the graph and persists the checkpoint.
+    interrupt(value=review_payload)
+
+    # Unreachable — satisfies the type checker.
+    return {"status": "pending_review"}  # type: ignore[return-value]
+
+
+# ── Checkpointer factory ──────────────────────────────────────────────────────
+
+_checkpointer: AsyncPostgresSaver | None = None
+_checkpointer_exit_stack: AsyncExitStack | None = None
+
+
+async def get_checkpointer() -> AsyncPostgresSaver:
+    """
+    Return the shared AsyncPostgresSaver, initialising it on first call.
+
+    AsyncPostgresSaver requires psycopg3 (NOT asyncpg). from_conn_string()
+    manages its own psycopg3 connection pool internally. We enter the context
+    manager manually (via AsyncExitStack) so the pool lives for the entire
+    application lifetime. Call close_checkpointer() on shutdown.
+
+    setup() creates the LangGraph checkpoint tables. It is idempotent for DDL
+    (IF NOT EXISTS) but inserts into checkpoint_migrations on each call.
+    Concurrent instances (rolling deploy) will see UniqueViolation on that
+    INSERT — caught explicitly via psycopg.errors.UniqueViolation, not by
+    fragile string matching.
+    """
+    global _checkpointer, _checkpointer_exit_stack
+
+    if _checkpointer is None:
+        settings = get_settings()
+
+        # AsyncExitStack lets us manually enter the context manager once and
+        # later exit it cleanly in close_checkpointer().
+        stack = AsyncExitStack()
+        _checkpointer = await stack.enter_async_context(
+            AsyncPostgresSaver.from_conn_string(settings.database_dsn)
+        )
+        _checkpointer_exit_stack = stack
+
+        try:
+            await _checkpointer.setup()
+            log.info("checkpointer.setup_complete")
+        except UniqueViolation:
+            # Another instance already ran setup() and inserted the
+            # checkpoint_migrations row. Tables exist — safe to continue.
+            log.info("checkpointer.setup_skipped", reason="already_initialised_by_peer")
+        except Exception:
+            # Any other error during setup is unexpected — re-raise.
+            await stack.aclose()
+            _checkpointer = None
+            _checkpointer_exit_stack = None
+            raise
+
+    return _checkpointer
+
+
+async def close_checkpointer() -> None:
+    """Release the psycopg3 pool held by the checkpointer (call on shutdown)."""
+    global _checkpointer, _checkpointer_exit_stack
+
+    if _checkpointer_exit_stack is not None:
+        await _checkpointer_exit_stack.aclose()
+        _checkpointer = None
+        _checkpointer_exit_stack = None
+        log.info("checkpointer.closed")
 
 
 # ── Graph factory ─────────────────────────────────────────────────────────────
 
-def build_graph(checkpointer: AsyncSqliteSaver | None = None):
-    # NB: niente annotazione di ritorno esplicita: builder.compile() ritorna un
-    # CompiledStateGraph (che espone ainvoke/astream), non uno StateGraph.
-    # Lasciamo inferire mypy così i chiamanti (api/routes.py) hanno il tipo giusto.
+
+def build_graph(checkpointer: AsyncPostgresSaver | None = None):
     """
-    Construct and compile the LangGraph StateGraph.
+    Construct and compile the LangGraph StateGraph — V2.
+
+    Called once from main.py lifespan; the compiled graph is stored on
+    app.state and reused across all requests.  The graph itself is stateless —
+    all per-thread state lives in the Postgres checkpoint.
 
     Parameters
     ----------
-    checkpointer:
-        Optional AsyncSqliteSaver instance for checkpoint persistence.
-        When provided, the graph supports interrupt/resume workflows.
-        Pass ``None`` during unit tests to skip persistence.
+    checkpointer : AsyncPostgresSaver | None
+        Postgres checkpointer for persistence. Pass None in unit tests to get
+        an in-memory-only graph.
 
     Returns
     -------
     CompiledGraph
         Ready-to-invoke compiled graph.
     """
-    builder: StateGraph = StateGraph(LeadState)
+    builder: StateGraph = StateGraph(AgentState)
 
     # ── Register nodes ────────────────────────────────────────────────────────
     builder.add_node("sanitizer", sanitizer_node)
     builder.add_node("extractor", extractor_node)
     builder.add_node("mapper", mapper_node)
+    builder.add_node("evaluator", evaluator_node)
     builder.add_node("calculator", calculator_node)
     builder.add_node("delivery", delivery_node)
-    builder.add_node("human_fallback", human_fallback_node)
+    builder.add_node("hitl_interrupt", hitl_interrupt_node)
 
     # ── Static edges ──────────────────────────────────────────────────────────
     builder.set_entry_point("sanitizer")
     builder.add_edge("sanitizer", "extractor")
     builder.add_edge("extractor", "mapper")
+    builder.add_edge("mapper", "evaluator")
     builder.add_edge("calculator", "delivery")
-    builder.add_edge("human_fallback", END)
+    builder.add_edge("hitl_interrupt", END)
 
-    # ── Conditional edges (routing logic) ────────────────────────────────────
+    # ── Conditional edges ─────────────────────────────────────────────────────
     builder.add_conditional_edges(
-        source="mapper",
-        path=route_after_mapper,
+        source="evaluator",
+        path=route_after_evaluator,
         path_map={
             "calculator": "calculator",
             "extractor": "extractor",
-            "human_fallback": "human_fallback",
+            "hitl_interrupt": "hitl_interrupt",
         },
     )
     builder.add_conditional_edges(
@@ -194,37 +299,5 @@ def build_graph(checkpointer: AsyncSqliteSaver | None = None):
     )
 
     compiled = builder.compile(checkpointer=checkpointer)
-    logger.info("LangGraph compiled successfully (checkpointer=%s)", type(checkpointer).__name__)
+    log.info("graph.compiled", checkpointer=type(checkpointer).__name__)
     return compiled
-
-
-async def get_checkpointer() -> AsyncSqliteSaver:
-    """
-    Async factory that returns a ready-to-use ``AsyncSqliteSaver``.
-
-    Why async?
-    ----------
-    ``AsyncSqliteSaver`` wraps an ``aiosqlite`` connection, which must be
-    opened with ``await aiosqlite.connect(...)``.  The function therefore
-    needs to be a coroutine so the caller can ``await get_checkpointer()``.
-
-    Why not SqliteSaver?
-    --------------------
-    The sync ``SqliteSaver`` uses blocking ``sqlite3`` I/O and is incompatible
-    with LangGraph's async graph methods (``astream``, ``ainvoke``): the
-    internal checkpoint read/write calls would block the event loop and, in
-    practice, raise a ``MissingImplementationError`` for the async abstract
-    methods.
-
-    Abstraction note: to switch to ``AsyncPostgresSaver`` for production,
-    replace this function's body (import asyncpg / psycopg, open the async
-    connection, return ``AsyncPostgresSaver(conn)``) without touching any
-    other module.
-    """
-    settings = get_settings()
-    db_path = settings.sqlite_db_path
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn: aiosqlite.Connection = await aiosqlite.connect(str(db_path))
-    logger.info("AsyncSqliteSaver initialised at %s", db_path)
-    return AsyncSqliteSaver(conn)

@@ -1,0 +1,331 @@
+# docker-compose.prod.yml — Produzione single-node
+# ─────────────────────────────────────────────────────────────────────────────
+# Architettura:
+#
+#   Internet → Traefik (80/443) → FastAPI (backend)
+#                                      │
+#                             ┌────────┴────────┐
+#                          Postgres          Redis
+#                             │                 │
+#                          Worker (ARQ) ────────┘
+#                             │
+#                     host.docker.internal:11434
+#                          (Ollama sul host, GPU)
+#
+# Principi di sicurezza
+# ─────────────────────
+# • Solo Traefik espone le porte 80 e 443 sul host.
+# • Postgres, Redis e il worker NON hanno `ports:` mappate.
+# • Tutte le comunicazioni interne avvengono su `backend_network` isolata.
+# • I log di Traefik sono a livello INFO e non loggano i body delle request
+#   (accessLog.fields.defaultMode=drop, poi ri-aggiungi solo ciò che serve).
+# • Le credenziali arrivano esclusivamente da .env.prod (mai hardcoded).
+#
+# Scalabilità futura verso il data center
+# ────────────────────────────────────────
+# Quando Postgres e Redis migreranno su server dedicati, è sufficiente:
+# 1. Rimuovere i servizi `postgres` e `redis` da questo file.
+# 2. Aggiornare DATABASE_DSN e REDIS_DSN in .env.prod con i nuovi DSN.
+# 3. Rifare `docker compose -f docker-compose.prod.yml up -d --no-deps backend worker`.
+# Nessuna altra modifica al codice applicativo.
+#
+# Comandi principali
+# ──────────────────
+# Prima deploy:  vedere README §Deploy o DEPLOY.md
+# Aggiornamento: docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+# Stop:          docker compose -f docker-compose.prod.yml down
+# Reset dati:    docker compose -f docker-compose.prod.yml down -v   ← CANCELLA VOLUMI
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Traefik — Reverse Proxy + SSL ────────────────────────────────────────────
+  traefik:
+    image: traefik:v3.1
+    container_name: traefik
+    restart: unless-stopped
+    command:
+      # ── Globali ───────────────────────────────────────────────────────────────
+      - "--global.sendAnonymousUsage=false"
+      - "--log.level=INFO"
+      # Disabilita il log dei body HTTP: preserva PII dei lead (GDPR).
+      - "--accesslog=true"
+      - "--accesslog.fields.defaultmode=drop"
+      - "--accesslog.fields.names.ClientHost=keep"
+      - "--accesslog.fields.names.RequestMethod=keep"
+      - "--accesslog.fields.names.RequestPath=keep"
+      - "--accesslog.fields.names.DownstreamStatus=keep"
+      - "--accesslog.fields.names.Duration=keep"
+      - "--accesslog.fields.headers.defaultmode=drop"
+
+      # ── Provider Docker ───────────────────────────────────────────────────────
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=backend_network"
+
+      # ── Entrypoints ───────────────────────────────────────────────────────────
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+
+      # ── ACME / Let's Encrypt ──────────────────────────────────────────────────
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Socket Docker (read-only): Traefik legge le label dei container.
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      # Certificati ACME — persisti su volume dedicato.
+      - "letsencrypt_data:/letsencrypt"
+    networks:
+      - backend_network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: "256M"
+        reservations:
+          memory: "64M"
+
+
+  # ── PostgreSQL + pgvector ─────────────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: postgres
+    restart: unless-stopped
+    # NESSUNA `ports:` — raggiungibile SOLO via backend_network.
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ai_lead_qualifier}
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend_network
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-ai_lead_qualifier}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          # Postgres può usare RAM per shared_buffers: 1 GB è adeguato
+          # per un catalogo B2B. Aumentare se la tabella cresce.
+          cpus: "1.00"
+          memory: "1G"
+        reservations:
+          memory: "256M"
+
+
+  # ── Redis (ARQ broker) ────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    # NESSUNA `ports:`.
+    command:
+      - "redis-server"
+      - "--requirepass"
+      - "${REDIS_PASSWORD}"
+      - "--maxmemory"
+      - "256mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+      - "--save"
+      - "900 1"
+      - "--save"
+      - "300 10"
+      - "--appendonly"
+      - "no"
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend_network
+    healthcheck:
+      test:
+        - "CMD"
+        - "redis-cli"
+        - "-a"
+        - "${REDIS_PASSWORD}"
+        - "ping"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: "384M"
+        reservations:
+          memory: "64M"
+
+
+  # ── Backend (FastAPI) ─────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
+    image: ai-lead-qualifier-backend:${APP_VERSION:-latest}
+    container_name: backend
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      # Override sicuro: i valori del .env.prod vengono ignorati per questi.
+      DATABASE_DSN: "postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB:-ai_lead_qualifier}"
+      REDIS_DSN: "redis://:${REDIS_PASSWORD}@redis:6379"
+      # Ollama gira sul host con GPU — non containerizzato.
+      LLM_BASE_URL: "http://host.docker.internal:11434/v1"
+      EMBEDDING_BASE_URL: "http://host.docker.internal:11434"
+      UPLOAD_DIR: "/app/uploads"
+      # Log strutturato JSON in produzione.
+      LOG_LEVEL: "INFO"
+    volumes:
+      - uploads_data:/app/uploads
+      # Chiavi RSA per JWT RS256 (generate prima del deploy — vedi DEPLOY.md).
+      - "${JWT_KEYS_PATH:-./keys}:/app/keys:ro"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    labels:
+      # ── Traefik routing ────────────────────────────────────────────────────
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`${API_DOMAIN}`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.backend.loadbalancer.server.port=8000"
+      # ── Middleware: rate-limit ─────────────────────────────────────────────
+      # Protegge /lead e /ingest dall'essere martellati.
+      - "traefik.http.middlewares.api-ratelimit.ratelimit.average=30"
+      - "traefik.http.middlewares.api-ratelimit.ratelimit.burst=10"
+      - "traefik.http.routers.backend.middlewares=api-ratelimit"
+    deploy:
+      resources:
+        limits:
+          # FastAPI è I/O bound — 1 CPU basta; la RAM copre il modello in memoria.
+          cpus: "1.00"
+          memory: "512M"
+        reservations:
+          memory: "128M"
+
+
+  # ── ARQ Worker ────────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
+    image: ai-lead-qualifier-backend:${APP_VERSION:-latest}
+    container_name: worker
+    command: python -m arq worker.worker_settings.WorkerSettings
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      DATABASE_DSN: "postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB:-ai_lead_qualifier}"
+      REDIS_DSN: "redis://:${REDIS_PASSWORD}@redis:6379"
+      LLM_BASE_URL: "http://host.docker.internal:11434/v1"
+      EMBEDDING_BASE_URL: "http://host.docker.internal:11434"
+      # Concorrenza massima: 1 job LLM alla volta su GPU condivisa con modello 14B.
+      # Aumentare a 2-3 solo se si ha una GPU dedicata (es. data center futuro).
+      ARQ_MAX_JOBS: "${ARQ_MAX_JOBS:-1}"
+      ARQ_JOB_TIMEOUT: "${ARQ_JOB_TIMEOUT:-300}"
+      ARQ_KEEP_RESULT: "${ARQ_KEEP_RESULT:-86400}"
+      LOG_LEVEL: "INFO"
+    volumes:
+      - uploads_data:/app/uploads
+      - "${JWT_KEYS_PATH:-./keys}:/app/keys:ro"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend_network
+    # Il worker NON ha label Traefik: non espone endpoint HTTP.
+    deploy:
+      resources:
+        limits:
+          # CPU libera durante l'attesa Ollama; la RAM copre il pool asyncpg
+          # e i payload JSON in transito (non i pesi del modello LLM).
+          cpus: "0.50"
+          memory: "512M"
+        reservations:
+          memory: "128M"
+
+
+  # ── Frontend (Nginx) ──────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: ai-lead-qualifier-frontend:${APP_VERSION:-latest}
+    container_name: frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - backend_network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`${APP_DOMAIN}`)"
+      - "traefik.http.routers.frontend.entrypoints=websecure"
+      - "traefik.http.routers.frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.frontend.loadbalancer.server.port=80"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: "128M"
+        reservations:
+          memory: "32M"
+
+
+# ── Volumi persistenti ────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+    driver: local
+    # Migrazione futura data center: sostituire con un driver NFS o CSI.
+    # driver_opts:
+    #   type: nfs
+    #   o: addr=storage.interno,rw
+    #   device: ":/data/ai_lead_qualifier/postgres"
+
+  redis_data:
+    driver: local
+
+  uploads_data:
+    driver: local
+
+  letsencrypt_data:
+    driver: local
+
+
+# ── Rete interna isolata ──────────────────────────────────────────────────────
+networks:
+  backend_network:
+    driver: bridge
+    # In futuro, sostituire con `overlay` per Docker Swarm multi-nodo.
+    # driver: overlay
+    # attachable: true

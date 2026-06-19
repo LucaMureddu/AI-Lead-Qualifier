@@ -1,18 +1,16 @@
-// src/api.js
+// src/api.js — V2
 // ------------------------------------------------------------------
-// Livello di comunicazione col backend. NON tocca mai il DOM:
-// ritorna dati / invoca callback su evento (vedi §3 del piano).
+// Communication layer with the backend.
 //
-// Sicurezza JWT (multi-tenant)
-// ----------------------------
-// Ogni chiamata autenticata include l'header:
-//   Authorization: Bearer <token>
-// Il token è letto da localStorage tramite getToken().
-// Se il backend risponde 401, viene dispatch-ato l'evento DOM
-// "auth:unauthorized" che app.js gestisce eseguendo App.logout().
-//
-// Il tenant_id NON viene più inviato nei body / FormData: il backend
-// lo estrae direttamente dal claim "sub" del JWT.
+// V2 changes vs V1
+// ----------------
+// - SSE (streamSSE, qualifyStream) REMOVED from lead qualification
+// - NEW: submitLead (POST /lead → 202), getLeadStatus (GET /status/{id}),
+//   approveLead (POST /lead/{id}/approve)
+// - NEW: Poller class — replaces SSE ReadableStream with interval polling
+// - JWT: now RS256 (same localStorage key, transparent to this layer)
+// - Kept: ingestStream (SSE for catalogue ingestion), uploadCatalogue,
+//         approveIngestion, wipeVectorData, checkHealth, profile endpoints
 
 import { API_BASE_URL } from "./config.js";
 
@@ -21,19 +19,10 @@ const TOKEN_KEY = "jwt_token";
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 
-/** Legge il token JWT dal localStorage. */
 function getToken() {
   return localStorage.getItem(TOKEN_KEY);
 }
 
-/**
- * Costruisce gli header di autenticazione da fondere con quelli specifici
- * della chiamata. Se non c'è token l'header Authorization è omesso
- * (utile per /health e /token che sono endpoint pubblici).
- *
- * @param {Record<string,string>} extra  Header aggiuntivi (es. Content-Type).
- * @returns {Record<string,string>}
- */
 function authHeaders(extra = {}) {
   const token = getToken();
   return {
@@ -42,10 +31,6 @@ function authHeaders(extra = {}) {
   };
 }
 
-/**
- * Dispatch-a l'evento "auth:unauthorized" sul window.
- * app.js ascolta questo evento e chiama App.logout() → la login screen torna visibile.
- */
 function handle401() {
   window.dispatchEvent(new CustomEvent("auth:unauthorized"));
 }
@@ -53,11 +38,9 @@ function handle401() {
 // ── Auth endpoint ─────────────────────────────────────────────────────────────
 
 /**
- * POST /token — mock auth.
- * Invia l'username (= tenant_id) e riceve un JWT firmato con la SECRET_KEY.
- *
- * @param {string} username  Sarà il claim "sub" del token.
- * @returns {Promise<string>} Il JWT grezzo (access_token).
+ * POST /token — mock auth (dev only; production uses external IdP with RS256).
+ * @param {string} username  Used as tenant_id claim.
+ * @returns {Promise<string>} Raw JWT.
  */
 export async function login(username) {
   const res = await fetch(`${BASE}/token`, {
@@ -65,66 +48,147 @@ export async function login(username) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username }),
   });
-
   if (!res.ok) {
     let detail = `Login fallito: HTTP ${res.status}`;
-    try {
-      const j = await res.json();
-      if (j && j.detail) detail = j.detail;
-    } catch { /* noop */ }
+    try { const j = await res.json(); if (j?.detail) detail = j.detail; } catch { /* noop */ }
     throw new Error(detail);
   }
-
   const { access_token } = await res.json();
   return access_token;
 }
 
-// ── SSE helpers ───────────────────────────────────────────────────────────────
+// ── Lead qualification — V2 async polling (no SSE) ───────────────────────────
 
 /**
- * Consuma uno stream SSE da un endpoint POST.
- *
- * Bufferizza i chunk e splitta sui doppi newline ("\n\n"), che il backend usa
- * come delimitatore di frame. Cattura l'header X-Thread-Id (necessario per
- * /approve) e lo restituisce; lo espone anche subito via onMeta, appena gli
- * header arrivano (utile perché lo stream ingest può chiudersi sull'interrupt).
- *
- * Il token JWT è iniettato nell'header Authorization: Bearer <token>.
- * Un 401 dispatch-a "auth:unauthorized" e interrompe lo stream.
- *
- * @param {string} path     es. "/qualify/stream"
- * @param {object} body     payload JSON (senza tenant_id)
- * @param {object} handlers { onEvent(frame), onMeta({threadId}), signal }
- * @returns {Promise<{threadId: string|null}>}
+ * POST /lead — enqueue a lead job, returns { thread_id, status: "queued" }.
+ * @param {string} rawText
+ * @param {string} token
+ * @param {string|null} leadId  Optional external identifier.
  */
-export async function streamSSE(path, body, { onEvent, onMeta, signal } = {}) {
-  const res = await fetch(`${BASE}${path}`, {
+export async function submitLead(rawText, token, leadId = null) {
+  const res = await fetch(`${BASE}/lead`, {
     method: "POST",
-    headers: authHeaders({
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
-    }),
-    body: JSON.stringify(body),
-    signal,
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ raw_text: rawText, lead_id: leadId }),
   });
-
-  if (res.status === 401) {
-    handle401();
-    throw new Error("Sessione scaduta. Effettua nuovamente il login.");
-  }
-
+  if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
-    try {
-      const j = await res.json();
-      if (j && j.detail) detail = j.detail;
-    } catch { /* corpo non-JSON: tieni il messaggio HTTP */ }
+    try { const j = await res.json(); if (j?.detail) detail = j.detail; } catch { /* noop */ }
     throw new Error(detail);
   }
+  return res.json(); // { thread_id, status: "queued" }
+}
 
-  // NB: cross-origin l'header custom è leggibile solo se il backend lo espone
-  // (Access-Control-Expose-Headers). In ogni caso il thread_id arriva anche nel
-  // payload degli eventi interrupt/done, quindi /approve funziona comunque.
+/**
+ * GET /status/{threadId} — poll the current state of a lead job.
+ * @param {string} threadId
+ * @returns {Promise<{thread_id, status, result, error_detail}>}
+ */
+export async function getLeadStatus(threadId) {
+  const res = await fetch(`${BASE}/status/${encodeURIComponent(threadId)}`, {
+    headers: authHeaders(),
+    cache: "no-store",
+  });
+  if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { const j = await res.json(); if (j?.detail) detail = j.detail; } catch { /* noop */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+/**
+ * POST /lead/{threadId}/approve — approve or reject a pending_review job.
+ * @param {string} threadId
+ * @param {boolean} approved
+ * @param {string|null} feedback
+ * @returns {Promise<{thread_id, status}>}
+ */
+export async function approveLead(threadId, approved, feedback = null) {
+  const res = await fetch(`${BASE}/lead/${encodeURIComponent(threadId)}/approve`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ approved, feedback: feedback || null }),
+  });
+  if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { const j = await res.json(); if (j?.detail) detail = j.detail; } catch { /* noop */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+// ── Poller class ──────────────────────────────────────────────────────────────
+
+/**
+ * Polls GET /status/{threadId} at a fixed interval.
+ *
+ * Features:
+ * - No-overlap: skips a tick if the previous request is still in flight.
+ * - Auto-stops when status reaches a terminal state (completed|error|pending_review).
+ * - Exposes start() / stop() for lifecycle management.
+ *
+ * @example
+ *   new Poller({
+ *     threadId,
+ *     intervalMs: 2500,
+ *     onUpdate: (data) => { store.status = data.status; },
+ *     onDone:   (data) => { store.result = data.result; },
+ *     onError:  (err)  => { console.error(err); },
+ *   }).start();
+ */
+export class Poller {
+  constructor({ threadId, intervalMs = 2500, onUpdate, onDone, onError }) {
+    this.threadId = threadId;
+    this.intervalMs = intervalMs;
+    this.onUpdate = onUpdate;
+    this.onDone = onDone;
+    this.onError = onError;
+    this._timer = null;
+    this._inflight = false;
+  }
+
+  start() {
+    this._tick(); // immediate first poll
+    this._timer = setInterval(() => this._tick(), this.intervalMs);
+    return this;
+  }
+
+  stop() {
+    clearInterval(this._timer);
+    this._timer = null;
+  }
+
+  async _tick() {
+    if (this._inflight) return; // no-overlap guard
+    this._inflight = true;
+    try {
+      const data = await getLeadStatus(this.threadId);
+      this.onUpdate?.(data);
+      if (["completed", "error", "pending_review"].includes(data.status)) {
+        this.stop();
+        this.onDone?.(data);
+      }
+    } catch (err) {
+      this.stop();
+      this.onError?.(err);
+    } finally {
+      this._inflight = false;
+    }
+  }
+}
+
+// ── Catalogue ingestion (SSE kept for ingest flow) ────────────────────────────
+
+function _formatSseHelper(data, { onEvent, onMeta, signal } = {}) {
+  // shared SSE stream consumer (used by ingestStream only in V2)
+  return { data, onEvent, onMeta, signal };
+}
+
+async function _consumeSSE(res, { onEvent, onMeta } = {}) {
   const threadId = res.headers.get("X-Thread-Id");
   onMeta?.({ threadId });
 
@@ -141,22 +205,20 @@ export async function streamSSE(path, body, { onEvent, onMeta, signal } = {}) {
     while ((sep = buffer.indexOf("\n\n")) !== -1) {
       const rawFrame = buffer.slice(0, sep);
       buffer = buffer.slice(sep + 2);
-      const frame = parseFrame(rawFrame);
+      const frame = _parseFrame(rawFrame);
       if (frame.data !== "" || frame.event !== "message") onEvent?.(frame);
     }
   }
 
-  // Flush di un eventuale frame residuo senza doppio newline finale.
   if (buffer.trim() !== "") {
-    const frame = parseFrame(buffer);
+    const frame = _parseFrame(buffer);
     if (frame.data !== "") onEvent?.(frame);
   }
 
   return { threadId };
 }
 
-/** Decodifica un singolo frame SSE grezzo in { event, data }. */
-function parseFrame(raw) {
+function _parseFrame(raw) {
   let event = "message";
   const dataLines = [];
   for (const line of raw.split("\n")) {
@@ -166,117 +228,84 @@ function parseFrame(raw) {
   return { event, data: dataLines.join("\n") };
 }
 
-// ── Chiamate concrete ─────────────────────────────────────────────────────────
-
-/** POST /qualify/stream — eventi: log, done, error. */
-export const qualifyStream = (payload, handlers) =>
-  streamSSE("/qualify/stream", payload, handlers);
-
-/** POST /ingest/stream — eventi: log, interrupt, done, error. Header X-Thread-Id. */
-export const ingestStream = (payload, handlers) =>
-  streamSSE("/ingest/stream", payload, handlers);
+/**
+ * POST /ingest/stream — SSE stream for catalogue ingestion.
+ * Events: log, interrupt, done, error.
+ */
+export async function ingestStream(payload, { onEvent, onMeta, signal } = {}) {
+  const res = await fetch(`${BASE}/ingest/stream`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json", Accept: "text/event-stream" }),
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { const j = await res.json(); if (j?.detail) detail = j.detail; } catch { /* noop */ }
+    throw new Error(detail);
+  }
+  return _consumeSSE(res, { onEvent, onMeta });
+}
 
 /**
- * Carica un file catalogo (POST /upload).
- * Il tenant_id NON viene più passato come campo FormData: il backend lo
- * ricava dal JWT nell'header Authorization.
- *
- * @param {File} file  File scelto dalla dropzone.
- * @returns {Promise<{file_path: string, file_format: string}>}
+ * POST /upload — upload a catalogue file, returns { file_path, file_format }.
  */
 export async function uploadCatalogue(file) {
   const form = new FormData();
   form.append("file", file);
-  // NB: NON impostare Content-Type manualmente — il browser lo calcola
-  // automaticamente includendo il boundary del multipart.
   const res = await fetch(`${BASE}/upload`, {
     method: "POST",
-    headers: authHeaders(), // solo Authorization; Content-Type = browser
+    headers: authHeaders(),
     body: form,
   });
-
-  if (res.status === 401) {
-    handle401();
-    throw new Error("Sessione scaduta. Effettua nuovamente il login.");
-  }
+  if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
   if (!res.ok) {
     let detail = `Upload fallito: HTTP ${res.status}`;
-    try {
-      const j = await res.json();
-      if (j && j.detail) detail = j.detail;
-    } catch { /* noop */ }
-    throw new Error(detail);
-  }
-  return res.json(); // { file_path, file_format }
-}
-
-/**
- * POST /ingest/{thread_id}/approve — riprende una run sospesa.
- *
- * @param {string} threadId
- * @param {{approved: boolean, feedback?: string|null}} decision
- * @returns {Promise<object>} ApprovalResponse
- */
-export async function approveIngestion(threadId, decision) {
-  const res = await fetch(
-    `${BASE}/ingest/${encodeURIComponent(threadId)}/approve`,
-    {
-      method: "POST",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(decision),
-    }
-  );
-
-  if (res.status === 401) {
-    handle401();
-    throw new Error("Sessione scaduta. Effettua nuovamente il login.");
-  }
-  if (res.status === 404) {
-    throw new Error("Nessuna run sospesa per questo thread_id (404).");
-  }
-  if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
-    try {
-      const j = await res.json();
-      if (j && j.detail) detail = j.detail;
-    } catch { /* noop */ }
-    throw new Error(detail);
-  }
-  return res.json(); // ApprovalResponse
-}
-
-/**
- * DELETE /api/v1/tenants/{tenantId}/vector-data — cancella la collection ChromaDB del tenant.
- *
- * @param {string} tenantId
- * @returns {Promise<{dropped: boolean, message: string, collection_name: string}>}
- */
-export async function wipeVectorData(tenantId) {
-  const res = await fetch(
-    `${BASE}/api/v1/tenants/${encodeURIComponent(tenantId)}/vector-data`,
-    {
-      method: "DELETE",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ confirm_wipe: true }),
-    }
-  );
-
-  if (res.status === 401) {
-    handle401();
-    throw new Error("Sessione scaduta. Effettua nuovamente il login.");
-  }
-  if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
-    try {
-      const j = await res.json();
-      if (j && j.detail) detail = j.detail;
-    } catch { /* noop */ }
+    try { const j = await res.json(); if (j?.detail) detail = j.detail; } catch { /* noop */ }
     throw new Error(detail);
   }
   return res.json();
 }
 
-/** GET /health — true se il backend risponde 200 (endpoint pubblico, no auth). */
+/**
+ * POST /ingest/{threadId}/approve — resume a suspended ingestion run.
+ */
+export async function approveIngestion(threadId, decision) {
+  const res = await fetch(`${BASE}/ingest/${encodeURIComponent(threadId)}/approve`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(decision),
+  });
+  if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
+  if (res.status === 404) throw new Error("Nessuna run sospesa per questo thread_id (404).");
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { const j = await res.json(); if (j?.detail) detail = j.detail; } catch { /* noop */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+/**
+ * DELETE /api/v1/tenants/{tenantId}/vector-data — pgvector hard reset.
+ */
+export async function wipeVectorData(tenantId) {
+  const res = await fetch(`${BASE}/api/v1/tenants/${encodeURIComponent(tenantId)}/vector-data`, {
+    method: "DELETE",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ confirm_wipe: true }),
+  });
+  if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { const j = await res.json(); if (j?.detail) detail = j.detail; } catch { /* noop */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+/** GET /health */
 export async function checkHealth() {
   try {
     const res = await fetch(`${BASE}/health`, { cache: "no-store" });
@@ -286,45 +315,28 @@ export async function checkHealth() {
   }
 }
 
-// ── Profilo tenant (preventivo brandizzato) ───────────────────────────────────
+// ── Tenant profile ────────────────────────────────────────────────────────────
 
-/** GET /tenants/{id}/profile — ritorna il profilo (o i default vuoti). */
 export async function getTenantProfile(tenantId) {
-  const res = await fetch(
-    `${BASE}/tenants/${encodeURIComponent(tenantId)}/profile`,
-    {
-      cache: "no-store",
-      headers: authHeaders(),
-    }
-  );
-  if (res.status === 401) {
-    handle401();
-    throw new Error("Sessione scaduta.");
-  }
+  const res = await fetch(`${BASE}/tenants/${encodeURIComponent(tenantId)}/profile`, {
+    cache: "no-store",
+    headers: authHeaders(),
+  });
+  if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
-/** PUT /tenants/{id}/profile — salva (upsert) il profilo, ritorna quello salvato. */
 export async function saveTenantProfile(tenantId, profile) {
-  const res = await fetch(
-    `${BASE}/tenants/${encodeURIComponent(tenantId)}/profile`,
-    {
-      method: "PUT",
-      headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(profile),
-    }
-  );
-  if (res.status === 401) {
-    handle401();
-    throw new Error("Sessione scaduta.");
-  }
+  const res = await fetch(`${BASE}/tenants/${encodeURIComponent(tenantId)}/profile`, {
+    method: "PUT",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(profile),
+  });
+  if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
-    try {
-      const j = await res.json();
-      if (j && j.detail) detail = j.detail;
-    } catch { /* noop */ }
+    try { const j = await res.json(); if (j?.detail) detail = j.detail; } catch { /* noop */ }
     throw new Error(detail);
   }
   return res.json();
