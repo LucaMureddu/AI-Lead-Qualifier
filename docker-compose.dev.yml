@@ -1,11 +1,13 @@
 # docker-compose.dev.yml
 # ─────────────────────────────────────────────────────────────────────────────
 # Ambiente di Sviluppo Locale (Mac/Windows/Linux)
-# 
+#
 # Modifiche rispetto alla prod:
 # - NO Traefik (chiamate dirette alle porte)
 # - Porte aperte per DB e Redis per ispezione
 # - Volumi montati in tempo reale (Live Reload)
+# - MinIO (S3-compatible): sostituisce il volume locale uploads_data_dev.
+#   L'app è ora 100% stateless: nessun file su disco nel container.
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -30,7 +32,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Redis (ARQ broker) ────────────────────────────────────────────────────────
+  # ── Redis (ARQ broker + slowapi rate-limit store) ─────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: dev_redis
@@ -42,6 +44,50 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  # ── MinIO (Object Storage S3-compatible) ─────────────────────────────────────
+  # Sostituisce il volume locale uploads_data_dev.
+  # Console web: http://localhost:9001  (minioadmin / minioadmin)
+  # API S3:      http://localhost:9000
+  minio:
+    image: minio/minio:latest
+    container_name: dev_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000" # Endpoint S3 API (usato da aioboto3)
+      - "9001:9001" # Console web MinIO
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio_data_dev:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── MinIO bucket init (job una-tantum) ────────────────────────────────────────
+  # Crea il bucket S3_BUCKET_NAME se non esiste già, poi esce.
+  # Dipende da minio healthy così non parte prima che l'API S3 sia pronta.
+  minio-init:
+    image: minio/mc:latest
+    container_name: dev_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-ai-lead-qualifier}
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD;
+        mc mb --ignore-existing local/$$S3_BUCKET_NAME;
+        echo 'Bucket $$S3_BUCKET_NAME ready.';
+      "
+    restart: "no"
 
   # ── Backend (FastAPI) ─────────────────────────────────────────────────────────
   backend:
@@ -59,15 +105,20 @@ services:
       REDIS_DSN: "redis://redis:6379"
       LLM_BASE_URL: "http://host.docker.internal:11434/v1"
       EMBEDDING_BASE_URL: "http://host.docker.internal:11434"
-      UPLOAD_DIR: "/app/uploads"
+      # S3 / MinIO — nessun filesystem locale
+      S3_ENDPOINT_URL: "http://minio:9000"
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-ai-lead-qualifier}
     volumes:
-      # Sincronizza il tuo codice live nel container
+      # Sincronizza il tuo codice live nel container (solo sorgenti, non upload)
       - ./backend:/app
-      - uploads_data_dev:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      minio:
         condition: service_healthy
 
   # ── ARQ Worker ────────────────────────────────────────────────────────────────
@@ -83,15 +134,20 @@ services:
       REDIS_DSN: "redis://redis:6379"
       LLM_BASE_URL: "http://host.docker.internal:11434/v1"
       EMBEDDING_BASE_URL: "http://host.docker.internal:11434"
-      UPLOAD_DIR: "/app/uploads"
+      # S3 / MinIO — il worker legge i file via S3 se necessario in futuro
+      S3_ENDPOINT_URL: "http://minio:9000"
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-ai-lead-qualifier}
     volumes:
       # Il worker vede subito le tue modifiche al codice
       - ./backend:/app
-      - uploads_data_dev:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      minio:
         condition: service_healthy
 
   # ── Frontend (Nginx) ──────────────────────────────────────────────────────────
@@ -108,4 +164,4 @@ services:
 # ── Volumi (separati da quelli di prod) ─────────────────────────────────────────
 volumes:
   postgres_data_dev:
-  uploads_data_dev:
+  minio_data_dev:  # uploads ora su MinIO — uploads_data_dev rimosso

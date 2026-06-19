@@ -66,6 +66,14 @@ respx>=0.21.0
 anyio>=4.0.0
 testcontainers[postgres]>=4.7.0        # container pgvector reale per test vector_store
 
+# ── Object Storage S3 (V2.1) ──────────────────────────────────────────────────
+aioboto3>=13.0.0
+types-aiobotocore-s3>=2.13.0
+
+# ── Rate limiting (V2.1) ──────────────────────────────────────────────────────
+slowapi>=0.1.9
+limits[redis]>=3.13.0
+
 # ── Lint / type-check ─────────────────────────────────────────────────────────
 ruff>=0.4.0
 mypy>=1.10.0

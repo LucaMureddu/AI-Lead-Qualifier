@@ -1,7 +1,7 @@
 """
 worker/tasks.py
 ---------------
-ARQ task functions — V2.
+ARQ task functions — V2.1.
 
 These are the background jobs executed by the ARQ worker process.
 FastAPI enqueues them and responds immediately with 202 Accepted.
@@ -127,8 +127,16 @@ async def run_qualification_task_resume(
     """
     ARQ task: resume a graph suspended in pending_review after human approval.
 
-    The checkpoint in Postgres already contains human_approved=True (written
-    by /approve). The graph resumes from the node after the interrupt.
+    The checkpoint in Postgres already contains human_approved=True and
+    status='queued' (written by POST /lead/{thread_id}/approve via
+    graph.aupdate_state). Passing a non-None dict in Command(resume=...) would
+    be redundant and could shadow the state already committed to Postgres.
+
+    Command(resume=None) tells LangGraph to resume from the checkpoint as-is,
+    without injecting any additional value into the interrupted node.
+
+    V2.1 change: was Command(resume={"human_approved": True}) — removed the
+    redundant dict.
     """
     from langgraph.types import Command
 
@@ -138,7 +146,7 @@ async def run_qualification_task_resume(
     config = {"configurable": {"thread_id": thread_id}}
 
     try:
-        await graph.ainvoke(Command(resume={"human_approved": True}), config=config)
+        await graph.ainvoke(Command(resume=None), config=config)
         log.info(
             "qualification.resume_done", thread_id=thread_id, tenant_id=tenant_id
         )

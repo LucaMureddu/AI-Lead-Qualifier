@@ -24,6 +24,46 @@ from core.state import AgentState
 log = structlog.get_logger()
 
 
+def _format_quote_body(
+    mapped_services: list[dict],
+    total_quote: float,
+    total_is_partial: bool,
+) -> str:
+    """
+    Build a human-readable quote body for the delivery email.
+
+    Three-branch logic per service line:
+    - is_on_request → "• {nome} — su richiesta"
+    - price == 0.0  → "• {nome} — Gratis"
+    - else          → "• {nome} — {price:.2f} €"
+
+    This correctly distinguishes a legitimately free service (price=0.0,
+    is_on_request=False) from one whose price is unknown (is_on_request=True,
+    price stored as 0.0 in the DB).
+    """
+    lines: list[str] = ["Riepilogo servizi:", ""]
+    for svc in mapped_services:
+        nome: str = svc.get("matched_name") or svc.get("service", "?")
+        price: float = float(svc.get("price", 0.0))
+        if svc.get("is_on_request", False):
+            lines.append(f"• {nome} — su richiesta")
+        elif price == 0.0:
+            lines.append(f"• {nome} — Gratis")
+        else:
+            lines.append(f"• {nome} — {price:.2f} €")
+
+    lines.append("")
+    if total_is_partial:
+        lines.append(
+            f"Totale parziale: {total_quote:.2f} € "
+            f"(alcuni servizi sono da preventivare)"
+        )
+    else:
+        lines.append(f"Totale: {total_quote:.2f} €")
+
+    return "\n".join(lines)
+
+
 async def delivery_node(state: AgentState) -> Dict[str, Any]:
     """
     LangGraph node: deliver the lead quote to the tenant's external system.
@@ -44,13 +84,17 @@ async def delivery_node(state: AgentState) -> Dict[str, Any]:
 
     adapter = get_delivery_adapter(tenant_id)
     on_request: list = state.get("on_request_services", [])
+    mapped: list = state.get("mapped_services", [])
+    total_quote: float = state.get("total_quote", 0.0)
+    total_is_partial: bool = len(on_request) > 0
     payload: Dict[str, Any] = {
         "lead_id": lead_id,
         "tenant_id": tenant_id,
-        "total_quote": state.get("total_quote", 0.0),
-        "total_is_partial": len(on_request) > 0,
-        "mapped_services": state.get("mapped_services", []),
+        "total_quote": total_quote,
+        "total_is_partial": total_is_partial,
+        "mapped_services": mapped,
         "on_request_services": on_request,
+        "quote_body": _format_quote_body(mapped, total_quote, total_is_partial),
     }
 
     try:

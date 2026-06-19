@@ -311,7 +311,7 @@
                             <p class="font-medium text-slate-800 truncate" data-testid="service-name" x-text="svc.matched_name || svc.service || '—'"></p>
                             <p class="text-xs text-slate-400" x-text="'distanza: ' + (svc.distance != null ? Number(svc.distance).toFixed(4) : 'n/d')"></p>
                           </div>
-                          <p class="font-semibold text-slate-800 whitespace-nowrap" x-text="ui.formatMoney(svc.price) + ' ' + (svc.unit || '€')"></p>
+                          <p class="font-semibold text-slate-800 whitespace-nowrap" x-text="quote.formatServicePrice(svc)"></p>
                         </li>
                       </template>
                     </ul>

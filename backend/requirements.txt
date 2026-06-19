@@ -46,6 +46,19 @@ pytest>=8.2.0
 pytest-asyncio>=0.23.0
 pytest-mock>=3.14.0
 
+# ── Object Storage S3 (V2.1) ──────────────────────────────────────────────────
+# aioboto3: wrapper asincrono di boto3 per Python asyncio (MinIO in dev, AWS S3 in prod).
+# types-aiobotocore-s3: stub MyPy per type-check del client S3.
+# botocore è dipendenza transitiva di aioboto3.
+aioboto3>=13.0.0
+types-aiobotocore-s3>=2.13.0
+
+# ── Rate limiting (V2.1) ──────────────────────────────────────────────────────
+# slowapi: rate limiting per FastAPI/Starlette.
+# limits[redis]: backend Redis per slowapi (fail-open se Redis non risponde).
+slowapi>=0.1.9
+limits[redis]>=3.13.0
+
 # ── Dev / quality ─────────────────────────────────────────────────────────────
 ruff>=0.4.0
 mypy>=1.10.0

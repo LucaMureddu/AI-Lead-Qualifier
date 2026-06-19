@@ -35,12 +35,28 @@ class TestSumPrices:
         with pytest.raises((ValueError, TypeError)):
             _sum_prices([{"price": "abc"}])
 
+    def test_on_request_excluded_from_sum(self) -> None:
+        """Un servizio is_on_request=True (price=0.0 nel DB) non deve entrare nel totale."""
+        services = [
+            {"price": 500.0, "is_on_request": False},
+            {"price": 0.0,   "is_on_request": True},   # su richiesta
+        ]
+        assert _sum_prices(services) == 500.0
+
+    def test_free_service_included_in_sum(self) -> None:
+        """Un servizio legittimamente gratuito (price=0.0, is_on_request=False) contribuisce 0."""
+        services = [
+            {"price": 100.0, "is_on_request": False},
+            {"price": 0.0,   "is_on_request": False},  # Gratis
+        ]
+        assert _sum_prices(services) == 100.0
+
 
 class TestCalculatorNode:
     def test_total_quote_written(self, make_lead_state) -> None:
         state = make_lead_state(mapped_services=[
-            {"matched_name": "SEO Audit", "price": 500.0, "unit": "€"},
-            {"matched_name": "Web Dev", "price": 2000.0, "unit": "€"},
+            {"matched_name": "SEO Audit", "price": 500.0, "is_on_request": False, "unit": "€"},
+            {"matched_name": "Web Dev",   "price": 2000.0, "is_on_request": False, "unit": "€"},
         ])
         assert calculator_node(state)["total_quote"] == 2500.0
 
@@ -51,3 +67,23 @@ class TestCalculatorNode:
         result = calculator_node(make_lead_state(mapped_services=[{"service": "X"}]))  # manca "price"
         assert result.get("error_detail") is not None
         assert result["total_quote"] == 0.0
+
+    def test_on_request_uses_flag_not_price(self, make_lead_state) -> None:
+        """is_on_request=True deve finire in on_request_services anche se price != 0."""
+        state = make_lead_state(mapped_services=[
+            {"matched_name": "Consulenza", "price": 0.0,   "is_on_request": True},
+            {"matched_name": "Hosting",    "price": 50.0,  "is_on_request": False},
+        ])
+        result = calculator_node(state)
+        assert result["on_request_services"] == ["Consulenza"]
+        assert result["total_quote"] == 50.0
+
+    def test_free_service_not_in_on_request(self, make_lead_state) -> None:
+        """Un servizio Gratis (price=0.0, is_on_request=False) NON deve finire in on_request."""
+        state = make_lead_state(mapped_services=[
+            {"matched_name": "Onboarding", "price": 0.0, "is_on_request": False},
+            {"matched_name": "Setup",      "price": 200.0, "is_on_request": False},
+        ])
+        result = calculator_node(state)
+        assert result["on_request_services"] == []
+        assert result["total_quote"] == 200.0

@@ -16,6 +16,21 @@ export function formatMoneyIt(n) {
   return EUR.format(Number.isFinite(v) ? v : 0);
 }
 
+/**
+ * Etichetta prezzo per un servizio mappato. Tre rami:
+ *   is_on_request=true  → "su richiesta"
+ *   price === 0         → "Gratis"
+ *   else                → "1.234,50 €" (+ suffisso unità se presente)
+ *
+ * Usata sia nell'anteprima email (testo) sia nel PDF e nella lista UI.
+ */
+export function formatServicePrice(svc) {
+  if (svc && svc.is_on_request) return "su richiesta";
+  const price = Number(svc && svc.price);
+  if (price === 0) return "Gratis";
+  return formatMoneyIt(price) + unitSuffix(svc);
+}
+
 /** Data in formato italiano, es. "16/06/2026". */
 export function formatDateIt(d) {
   return new Date(d).toLocaleDateString("it-IT");
@@ -112,7 +127,7 @@ export function buildEmailQuote(result, settings, recipient) {
     L.push("• (nessun servizio mappato)");
   } else {
     for (const svc of services) {
-      L.push(`• ${serviceLabel(svc)} — ${formatMoneyIt(svc.price)}${unitSuffix(svc)}`);
+      L.push(`• ${serviceLabel(svc)} — ${formatServicePrice(svc)}`);
       const d = serviceDesc(svc);
       if (d) L.push(`  ${d}`);
     }
@@ -309,7 +324,7 @@ export async function generatePdf(result, settings, recipient) {
       doc.setFontSize(11);
       setColor(SLATE_800);
       doc.text(serviceLabel(svc), left, y, { maxWidth: 120 });
-      doc.text(`${formatMoneyIt(svc.price)}${unitSuffix(svc)}`, right, y, { align: "right" });
+      doc.text(formatServicePrice(svc), right, y, { align: "right" });
       y += 5;
       const d = serviceDesc(svc);
       if (d) {

@@ -32,6 +32,16 @@ from services.embeddings import EmbeddingError, aembed_query
 
 log: structlog.BoundLogger = structlog.get_logger()
 
+# Cosine distance threshold for relevance (range: 0.0 = identical, 2.0 = opposite).
+# Applied even when settings.mapper_max_distance == 0.0 (disabled) so that
+# irrelevant nearest-neighbour results (e.g. "Panino" vs a web-dev catalogue)
+# are discarded before reaching the EvaluatorNode.
+# Raised to 0.80 for Italian Nomic-Embed-Text: correct B2B matches (e.g.
+# "Sito Web Vetrina") typically land around cosine distance 0.60–0.70,
+# while true hallucinations ("Panino" vs a web-dev catalogue) sit above 0.85.
+# 0.80 keeps valid matches in and discards semantic nonsense.
+_DISTANCE_FALLBACK: float = 0.80
+
 
 async def mapper_node(state: AgentState) -> Dict:
     """
@@ -128,19 +138,74 @@ async def mapper_node(state: AgentState) -> Dict:
                 ),
             }
 
-        # ── 3. Accumula risultati ─────────────────────────────────────────────
-        retrieved_docs.extend(docs)
+        # ── 3. Filtra per distanza e seleziona il MIGLIOR match per query ───────
+        # Design: each service_query maps to AT MOST ONE catalogue service.
+        #
+        # Why best-match-only (not all k results):
+        #   • Returning all k=3 nearest-neighbours for 1 extracted service pads
+        #     mapped_services with mediocre matches, diluting avg_distance in the
+        #     evaluator and pushing the score below the HITL threshold even when
+        #     a strong match exists.
+        #   • The CalculatorNode would receive 3 prices for 1 requested service,
+        #     creating ambiguity in the quote.
+        #   • mapped_ratio = min(mapped / extracted, 1.0) is a coverage metric
+        #     ("did we find a match for every requested service?"), not a count.
+        #     It is only meaningful when mapped ≤ extracted.
+        #
+        # Log example (pre-fix): extracted=1, mapped=3, avg_dist=0.464 → score=0.54
+        # Log example (post-fix): extracted=1, mapped=1, avg_dist=0.25  → score=0.75
+        _threshold: float = (
+            settings.mapper_max_distance
+            if settings.mapper_max_distance > 0.0
+            else _DISTANCE_FALLBACK
+        )
+
+        # Partition docs into relevant / discarded.
+        relevant: List[Document] = []
         for doc in docs:
-            mapped_services.append(
-                {
-                    "service": doc.metadata["service"],
-                    "matched_name": doc.metadata["service"],
-                    "price": doc.metadata["price"],
-                    "unit": doc.metadata.get("unit", "€"),
-                    "distance": doc.metadata["distance"],
-                    "query": service_query,
-                }
+            dist: float = doc.metadata.get("distance", 1.0)
+            if dist > _threshold:
+                log.debug(
+                    "mapper.doc_discarded",
+                    lead_id=lead_id,
+                    tenant_id=tenant_id,
+                    service=doc.metadata.get("service", "?"),
+                    distance=round(dist, 4),
+                    threshold=_threshold,
+                    query=service_query,
+                )
+            else:
+                relevant.append(doc)
+
+        if not relevant:
+            log.debug(
+                "mapper.no_relevant_match",
+                lead_id=lead_id,
+                tenant_id=tenant_id,
+                query=service_query,
+                threshold=_threshold,
             )
+            continue  # No catalogue entry close enough — evaluator will score 0
+
+        # Keep only the best match (lowest cosine distance).
+        best: Document = min(relevant, key=lambda d: d.metadata.get("distance", 1.0))
+        best_dist: float = best.metadata.get("distance", 1.0)
+
+        retrieved_docs.append(best)
+        mapped_services.append(
+            {
+                "service": best.metadata["service"],
+                "matched_name": best.metadata["service"],
+                "price": best.metadata["price"],
+                "unit": best.metadata.get("unit", "€"),
+                # True when the catalogue entry had no price at ingestion time
+                # ("da preventivare" / null).  Lets downstream nodes distinguish
+                # a legitimately free service (price == 0.0) from an unknown one.
+                "is_on_request": bool(best.metadata.get("is_on_request", False)),
+                "distance": best_dist,
+                "query": service_query,
+            }
+        )
 
     log.info(
         "mapper.done",

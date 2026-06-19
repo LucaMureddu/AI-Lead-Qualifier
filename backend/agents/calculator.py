@@ -25,6 +25,10 @@ log = structlog.get_logger()
 def _sum_prices(mapped_services: List[Dict]) -> float:
     total: float = 0.0
     for entry in mapped_services:
+        # Skip on-request entries: their price is stored as 0.0 in the DB
+        # but must not contribute to the partial total.
+        if entry.get("is_on_request", False):
+            continue
         total += float(entry["price"])
     return round(total, 2)
 
@@ -60,7 +64,7 @@ def calculator_node(state: AgentState) -> Dict:
     on_request: List[str] = [
         entry.get("matched_name", entry.get("service", "?"))
         for entry in mapped_services
-        if float(entry.get("price", 0.0)) == 0.0
+        if entry.get("is_on_request", False)
     ]
 
     log.info(

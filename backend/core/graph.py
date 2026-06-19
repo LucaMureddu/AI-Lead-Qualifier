@@ -11,15 +11,15 @@ Topology
        │                                                     │ retry (retry_count < max)
   MapperNode                                                 │
        │                                                     │
-  EvaluatorNode ── score >= 0.75 ──► CalculatorNode         │
-       │                              │                      │
-       │                         DeliveryNode ◄─────────────┼── retry (attempts < max)
-       │                              │                      │
-       │                         SUCCESS → END              │
-       │                                                    │
-       ├── score < 0.75 & retry_count < max ───────────────┘
+  EvaluatorNode ── score >= threshold ──► CalculatorNode      │
+       │                                   │                   │
+       │                         DeliveryNode ◄───────────────┼── retry (attempts < max)
+       │                              │                        │
+       │                         SUCCESS → END                │
+       │                                                      │
+       ├── score < threshold & retry_count < max ─────────────┘
        │
-       └── score < 0.75 & retry_count == max ──► hitl_interrupt (pending_review)
+       └── score < threshold & retry_count == max ──► hitl_interrupt (pending_review)
 
 V2 changes vs V1
 ----------------
@@ -78,17 +78,17 @@ def route_after_evaluator(
     Conditional edge executed after EvaluatorNode.
 
     Decision matrix:
-    ┌──────────────────────────────────────┬────────────────────────────────┐
-    │ confidence_score >= 0.75             │ → CalculatorNode               │
-    │ score < 0.75 & retry_count < max    │ → ExtractorNode (retry)        │
-    │ score < 0.75 & retry_count == max   │ → hitl_interrupt (HITL)        │
-    └──────────────────────────────────────┴────────────────────────────────┘
+    ┌────────────────────────────────────────────────────────┬────────────────────────────────┐
+    │ confidence_score >= settings.evaluator_threshold       │ → CalculatorNode               │
+    │ score < threshold & retry_count < max                  │ → ExtractorNode (retry)        │
+    │ score < threshold & retry_count == max                 │ → hitl_interrupt (HITL)        │
+    └────────────────────────────────────────────────────────┴────────────────────────────────┘
     """
     settings = get_settings()
     score: float = state.get("confidence_score", 0.0)
     retry: int = state.get("retry_count", 0)
 
-    if score >= 0.75:
+    if score >= settings.evaluator_threshold:
         log.debug("route.evaluator", next="calculator", score=round(score, 3))
         return "calculator"
 

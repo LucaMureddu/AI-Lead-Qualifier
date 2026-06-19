@@ -1,7 +1,7 @@
 """
 main.py
 -------
-FastAPI application entry point — V2.
+FastAPI application entry point — V2.1.
 
 V2 changes vs V1
 ----------------
@@ -11,11 +11,22 @@ V2 changes vs V1
 - ARQ worker is a separate process (arq worker.worker_settings.WorkerSettings).
 - SSE removed from qualification flow.
 
+V2.1 changes vs V2
+------------------
+- slowapi Limiter: rate limiting su /lead e /token, backend Redis (fail-open).
+  Se Redis non è raggiungibile, slowapi logga l'errore ma non blocca la request
+  (fail-open) — configurato tramite RateLimitExceeded handler e on_error callback.
+  Handler 429 registrato globalmente per restituire JSON invece dell'HTML di default.
+- services/storage.py: sessione aioboto3 inizializzata nel lifespan e chiusa
+  nello shutdown (close_storage()). Nessun filesystem locale per gli upload.
+- Health check esteso: verifica anche la raggiungibilità dell'endpoint S3/MinIO.
+
 Singletons stored on app.state
 -------------------------------
 - app.state.redis            ArqRedis pool — shared across all HTTP requests
 - app.state.graph            Compiled LangGraph (qualification) — stateless, thread-safe
 - app.state.ingestion_graph  Compiled LangGraph (ingestion) — idem
+- app.state.limiter          slowapi Limiter — referenziato dai decorator di route
 """
 
 from __future__ import annotations
@@ -40,6 +51,9 @@ from arq.connections import RedisSettings, create_pool as arq_create_pool
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from api.routes import (
     admin_router,
@@ -52,8 +66,10 @@ from api.routes import (
 from core.config import get_settings
 from core.graph import build_graph, close_checkpointer, get_checkpointer
 from core.logging_setup import configure_logging
+from core.rate_limit import limiter
 from database.db_core import close_pool, get_pool
 from ingestion.graph import build_ingestion_graph
+from services.storage import close_storage
 
 log = structlog.get_logger()
 
@@ -79,6 +95,7 @@ async def lifespan(app: FastAPI):
       4. Init LangGraph checkpointer (AsyncPostgresSaver / psycopg3)
       5. Build compiled graphs   ← stateless, reused across all requests
       6. Open ARQ Redis pool     ← job enqueuing
+      7. Init aioboto3 storage session ← S3/MinIO (lazy, first call)
 
     Shutdown: resources closed in reverse order.
     """
@@ -106,9 +123,15 @@ async def lifespan(app: FastAPI):
     app.state.redis = await arq_create_pool(RedisSettings.from_dsn(settings.redis_dsn))
     log.info("startup.arq_pool_ready")
 
+    # 6. aioboto3 storage session — lazy singleton in services/storage.py.
+    #    Nessuna connessione viene aperta qui: il client S3 è creato per ogni
+    #    operazione. Log del solo endpoint, mai delle credenziali.
+    log.info("startup.storage_ready", s3_endpoint=settings.s3_endpoint_url)
+
     yield  # ── application running ─────────────────────────────────────────
 
     # Shutdown: reverse order
+    close_storage()
     await app.state.redis.close()
     await close_checkpointer()
     await close_pool()
@@ -132,6 +155,22 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # ── Rate limiting (slowapi) ───────────────────────────────────────────────
+    # Il Limiter è un singleton di modulo (core/rate_limit.py) condiviso con
+    # i decorator @limiter.limit in routes.py. Lo assegniamo ad app.state
+    # affinché SlowAPIMiddleware lo trovi tramite request.app.state.limiter.
+    app.state.limiter = limiter
+
+    # SlowAPIMiddleware intercetta RateLimitExceeded e delega all'handler 429.
+    app.add_middleware(SlowAPIMiddleware)
+
+    # Handler globale 429: restituisce JSON invece dell'HTML di default di slowapi.
+    app.add_exception_handler(
+        RateLimitExceeded,
+        _rate_limit_exceeded_handler,  # type: ignore[arg-type]
+    )
+
+    # ── CORS ─────────────────────────────────────────────────────────────────
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -150,13 +189,14 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["ops"], summary="Health check")
     async def health(request: Request) -> JSONResponse:
         """
-        Verifies connectivity to Postgres and Redis.
+        Verifies connectivity to Postgres, Redis, and S3/MinIO.
 
-        Returns 503 if either dependency is unavailable. Redis is required for
+        Returns 503 if any dependency is unavailable. Redis is required for
         ARQ job enqueueing — if it is down, POST /lead accepts requests but
         cannot process them, so we must surface the failure here.
+        S3 is required for catalogue uploads.
         """
-        checks: dict = {}
+        checks: dict[str, str] = {}
         failed: bool = False
 
         # ── Postgres ──────────────────────────────────────────────────────────
@@ -169,7 +209,7 @@ def create_app() -> FastAPI:
             checks["postgres"] = f"error: {exc}"
             failed = True
 
-        # ── Redis (ARQ) ───────────────────────────────────────────────────────
+        # ── Redis (ARQ + slowapi) ─────────────────────────────────────────────
         try:
             redis = request.app.state.redis
             await redis.ping()
@@ -177,6 +217,25 @@ def create_app() -> FastAPI:
         except Exception as exc:
             log.error("health.redis_failed", error=str(exc))
             checks["redis"] = f"error: {exc}"
+            failed = True
+
+        # ── S3 / MinIO ────────────────────────────────────────────────────────
+        try:
+            import aioboto3
+            from botocore.exceptions import BotoCoreError, ClientError
+
+            s3_session = aioboto3.Session(
+                aws_access_key_id=settings.s3_access_key,
+                aws_secret_access_key=settings.s3_secret_key,
+            )
+            async with s3_session.client(
+                "s3", endpoint_url=settings.s3_endpoint_url
+            ) as s3:
+                await s3.head_bucket(Bucket=settings.s3_bucket_name)
+            checks["s3"] = "ok"
+        except (ClientError, BotoCoreError, Exception) as exc:
+            log.error("health.s3_failed", error=str(exc))
+            checks["s3"] = f"error: {exc}"
             failed = True
 
         status_code = 503 if failed else 200

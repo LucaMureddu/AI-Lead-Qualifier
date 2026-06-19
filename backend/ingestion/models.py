@@ -61,9 +61,13 @@ class ServiceItem(BaseModel):
         default=None,
         description="Service family / product line (e.g. 'Cloud', 'Consulting').",
     )
-    price: float = Field(
-        ...,
-        description="Unit price in the stated currency.  Must be ≥ 0.",
+    price: Optional[float] = Field(
+        default=0.0,
+        description=(
+            "Unit price in the stated currency.  Must be ≥ 0.  Defaults to 0.0 when unknown. "
+            "Accepts None when the LLM returns null (e.g. price strings like "
+            "'da preventivare' or '500 al mese') so ingestion never crashes."
+        ),
     )
     currency: str = Field(
         default="EUR",
@@ -100,7 +104,9 @@ class ServiceItem(BaseModel):
 
     @field_validator("price")
     @classmethod
-    def price_non_negative(cls, v: float) -> float:
+    def price_non_negative(cls, v: Optional[float]) -> Optional[float]:
+        if v is None:
+            return None  # "da preventivare" / unresolvable price strings → None
         if v < 0:
             raise ValueError(f"price must be ≥ 0, got {v}")
         return round(v, 4)
@@ -200,7 +206,7 @@ class IngestionState(TypedDict):
     source_file: str
     """Absolute path to the file being ingested."""
 
-    file_format: Literal["csv", "json", "xlsx"]
+    file_format: Literal["csv", "json", "xlsx", "pdf"]
     """Explicit format hint (not inferred from extension)."""
 
     # ── Chunking ──────────────────────────────────────────────────────────────

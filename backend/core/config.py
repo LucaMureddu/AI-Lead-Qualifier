@@ -1,7 +1,7 @@
 """
 core/config.py
 --------------
-Centralised configuration via Pydantic Settings — V2.
+Centralised configuration via Pydantic Settings — V2.1.
 
 V2 changes vs V1
 ----------------
@@ -9,6 +9,13 @@ V2 changes vs V1
 - ADDED:   database_dsn (asyncpg/Postgres), redis_dsn (ARQ), jwt_public_key_path,
            jwt_private_key_path, pgvector_embedding_dim, pgvector_n_results,
            cors_origins, app_version, token_endpoint_enabled
+
+V2.1 changes vs V2
+------------------
+- REMOVED: upload_dir (filesystem locale), UPLOAD_DIR env var
+- ADDED:   s3_endpoint_url, s3_access_key, s3_secret_key, s3_bucket_name
+           (Object Storage S3-compatible via aioboto3 — MinIO in dev, AWS S3 in prod)
+- ADDED:   rate_limit_lead, rate_limit_token (slowapi — stringhe "N/period")
 """
 
 from __future__ import annotations
@@ -134,11 +141,25 @@ class Settings(BaseSettings):
         description="Minimum mapped services required to consider the Mapper successful.",
     )
     mapper_max_distance: float = Field(
-        default=0.0,
+        default=0.80,
         ge=0.0,
         description=(
-            "If > 0, Mapper discards matches with cosine distance above this threshold. "
-            "0 = disabled (always keep the closest match)."
+            "Mapper discards catalogue matches with cosine distance above this threshold. "
+            "0 = disabled (keep the closest match regardless of distance). "
+            "Default 0.80 is calibrated for Italian Nomic-Embed-Text: valid B2B matches "
+            "land around 0.60–0.70, hallucinations above 0.85."
+        ),
+    )
+    evaluator_threshold: float = Field(
+        default=0.55,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum confidence_score for the EvaluatorNode to route to CalculatorNode "
+            "instead of retrying or triggering HITL. "
+            "Default 0.55 is calibrated for Italian Nomic-Embed-Text with best-match-only "
+            "mapping: valid leads score 0.65–0.73, so 0.55 passes them while still "
+            "blocking out-of-domain queries (score ≈ 0.0)."
         ),
     )
 
@@ -190,15 +211,50 @@ class Settings(BaseSettings):
         description="Replacement string for masked PII in sanitised text.",
     )
 
-    # ── Catalogue upload ──────────────────────────────────────────────────────
-    upload_dir: Path = Field(
-        default=Path("uploads"),
-        description="Base directory for uploaded catalogue files (tenant-scoped subdirs).",
+    # ── Object Storage S3 (V2.1) ─────────────────────────────────────────────
+    # Usato da services/storage.py via aioboto3.
+    # In sviluppo punta a MinIO (http://minio:9000).
+    # In produzione impostare su endpoint AWS o altro S3-compatible.
+    s3_endpoint_url: str = Field(
+        default="http://localhost:9000",
+        description=(
+            "URL dell'endpoint S3-compatible. "
+            "MinIO dev: http://minio:9000. "
+            "AWS S3: lasciare vuoto o usare https://s3.amazonaws.com."
+        ),
     )
+    s3_access_key: str = Field(
+        default="minioadmin",
+        description="Access key ID per il client S3 (MinIO root user in dev).",
+    )
+    s3_secret_key: str = Field(
+        default="minioadmin",
+        description="Secret access key per il client S3 (MinIO root password in dev).",
+    )
+    s3_bucket_name: str = Field(
+        default="ai-lead-qualifier",
+        description="Nome del bucket S3 dove vengono caricati i cataloghi.",
+    )
+
+    # ── Catalogue upload ──────────────────────────────────────────────────────
+    # upload_dir rimosso in V2.1: i file sono ora su S3 (Object Storage).
+    # Il filesystem del container non è più usato per i cataloghi.
     upload_max_bytes: int = Field(
         default=10 * 1024 * 1024,
         gt=0,
         description="Maximum allowed size (bytes) for an uploaded catalogue file.",
+    )
+
+    # ── Rate limiting (slowapi) ───────────────────────────────────────────────
+    # Formato slowapi: "N/period" dove period = second|minute|hour|day.
+    # Esempio: "5/minute" = max 5 richieste al minuto per IP/tenant.
+    rate_limit_lead: str = Field(
+        default="5/minute",
+        description="Rate limit per POST /lead (slowapi). Formato: 'N/period'.",
+    )
+    rate_limit_token: str = Field(
+        default="5/minute",
+        description="Rate limit per POST /token (slowapi). Formato: 'N/period'.",
     )
 
     # ── Tenant profile ────────────────────────────────────────────────────────

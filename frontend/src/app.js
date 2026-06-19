@@ -271,10 +271,10 @@ const App = {
     s.reviewPayload = null;
     s.result = null;
     try {
-      const { file_path, file_format } = await api.uploadCatalogue(file);
-      s.filePath = file_path;
+      const { object_key, file_format } = await api.uploadCatalogue(file);
+      s.filePath = object_key;
       s.fileFormat = file_format;
-      await App.startIngestion({ file_path, file_format });
+      await App.startIngestion({ object_key, file_format });
     } catch (e) {
       s.error = e.message;
       s.phase = "error";
@@ -395,7 +395,7 @@ const App = {
     const feedbackToSend = fb;
     s.feedback = "";
     await App.startIngestion({
-      file_path: s.filePath,
+      object_key: s.filePath,
       file_format: s.fileFormat,
       review_feedback: feedbackToSend,
     });

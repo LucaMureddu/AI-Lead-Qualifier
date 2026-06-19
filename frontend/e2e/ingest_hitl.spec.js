@@ -51,7 +51,7 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/health", (r) => r.fulfill({ json: { status: "ok" } }));
   await page.route("**/tenants/**/profile", (r) => r.fulfill({ json: PROFILE }));
   await page.route("**/upload", (r) =>
-    r.fulfill({ json: { file_path: `/uploads/${TENANT}/catalogo.csv`, file_format: "csv" } }),
+    r.fulfill({ json: { object_key: `${TENANT}/catalogo.csv`, file_format: "csv" } }),
   );
   // ingest/stream → due log + interrupt (con review_payload)
   await page.route("**/ingest/stream", (r) =>

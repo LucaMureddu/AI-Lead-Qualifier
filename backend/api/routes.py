@@ -1,7 +1,7 @@
 """
 api/routes.py
 -------------
-FastAPI routers — V2.
+FastAPI routers — V2.1.
 
 V2 changes vs V1
 ----------------
@@ -13,11 +13,22 @@ V2 changes vs V1
 - Catalogue ingestion: kept (ingest_router) — still SSE internally via ARQ task
 - Upload + Profile routers: unchanged logic, updated auth import
 
+V2.1 changes vs V2
+------------------
+- Rate limiting (slowapi): @limiter.limit applicato a POST /lead e POST /token.
+  Il limiter è il singleton di core/rate_limit.py (backend Redis, fail-open).
+  request: Request aggiunto come primo parametro nelle funzioni limitate.
+- Upload S3: upload_catalogue scrive su S3 via services/storage.upload_file()
+  invece di scrivere su filesystem locale. UploadResponse restituisce object_key
+  (S3 Object Key) al posto di file_path (path assoluto su disco).
+  IngestRequest usa object_key al posto di file_path.
+- Rimossi: dipendenza da Path, UPLOAD_DIR, volumi Docker per gli upload.
+
 Singletons from app.state
 -------------------------
 Route handlers access shared resources via lightweight FastAPI dependencies:
-- get_redis()          → app.state.redis           (ArqRedis pool)
-- get_graph()          → app.state.graph            (compiled qualification graph)
+- get_redis()           → app.state.redis           (ArqRedis pool)
+- get_graph()           → app.state.graph            (compiled qualification graph)
 - get_ingestion_graph() → app.state.ingestion_graph (compiled ingestion graph)
 All three are initialised once in main.py lifespan, never rebuilt per-request.
 
@@ -36,11 +47,11 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from pathlib import Path
 from typing import Any, Dict, Literal, Optional
 
 import structlog
 from arq import ArqRedis
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from langgraph.errors import GraphInterrupt
@@ -49,12 +60,25 @@ from pydantic import BaseModel, Field
 
 from api.dependencies import create_access_token, get_current_tenant_id
 from core.config import get_settings
+from core.rate_limit import limiter
 from core.state import AgentState, LeadContext
 from database.profiles import get_profile, upsert_profile
 from database.vector_store import wipe_tenant
 from ingestion.graph import make_initial_state
+from services.storage import upload_file
 
 log = structlog.get_logger()
+
+# ── MIME type maps for S3 uploads ─────────────────────────────────────────────
+_ALLOWED_EXTENSIONS: Dict[str, str] = {".csv": "csv", ".json": "json", ".xlsx": "xlsx"}
+
+_CONTENT_TYPE_MAP: Dict[str, str] = {
+    ".csv": "text/csv",
+    ".json": "application/json",
+    ".xlsx": (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    ),
+}
 
 
 # ── Shared-resource dependencies ──────────────────────────────────────────────
@@ -126,7 +150,9 @@ class HITLResponse(BaseModel):
 
 
 @router.post("/lead", status_code=202, response_model=LeadAcceptedResponse)
+@limiter.limit(get_settings().rate_limit_lead)
 async def ingest_lead(
+    request: Request,
     body: LeadRequest,
     tenant_id: str = Depends(get_current_tenant_id),
     redis: ArqRedis = Depends(get_redis),
@@ -135,9 +161,11 @@ async def ingest_lead(
     Enqueue a lead qualification job and return 202 immediately.
 
     The client polls GET /status/{thread_id} to follow progress.
+
+    Rate limited: see ``settings.rate_limit_lead`` (default: 5/minute per IP).
     """
-    lead_id = body.lead_id or str(uuid.uuid4())
-    thread_id = f"qualify-{tenant_id}-{lead_id}"
+    lead_id: str = body.lead_id or str(uuid.uuid4())
+    thread_id: str = f"qualify-{tenant_id}-{lead_id}"
     lead_context = LeadContext(
         lead_id=lead_id,
         tenant_id=tenant_id,
@@ -180,8 +208,8 @@ async def get_lead_status(
     if state["lead"].tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="Accesso negato.")
 
-    result = None
-    current_status = state.get("status", "processing")
+    result: Optional[Dict[str, Any]] = None
+    current_status: str = state.get("status", "processing")
 
     if current_status == "completed":
         result = {
@@ -272,7 +300,12 @@ async def approve_lead(
 # ═════════════════════════════════════════════════════════════════════════════
 
 class IngestRequest(BaseModel):
-    file_path: str = Field(..., description="Absolute server path to the catalogue file.")
+    # V2.1: object_key (S3) sostituisce file_path (path assoluto su disco).
+    # Valore proveniente da UploadResponse.object_key dopo il caricamento su S3.
+    object_key: str = Field(
+        ...,
+        description="S3 Object Key del file catalogo (da UploadResponse.object_key).",
+    )
     file_format: Literal["csv", "json", "xlsx"]
     review_feedback: Optional[str] = None
 
@@ -303,13 +336,20 @@ def _format_sse(data: str, event: Optional[str] = None) -> str:
 async def _ingest_sse_generator(
     graph,
     tenant_id: str,
-    file_path: str,
+    object_key: str,
     file_format: Literal["csv", "json", "xlsx"],
     thread_id: str,
     review_feedback: Optional[str],
 ):
-    """SSE generator for catalogue ingestion. Receives the pre-built graph singleton."""
-    initial_state = make_initial_state(tenant_id, file_path, file_format, review_feedback)
+    """
+    SSE generator for catalogue ingestion.
+
+    V2.1: riceve object_key (S3) invece di file_path (filesystem).
+    make_initial_state è responsabile di scaricare il file da S3 se necessario.
+    """
+    initial_state = make_initial_state(
+        tenant_id, object_key, file_format, review_feedback
+    )
     config: Dict[str, Any] = {"configurable": {"thread_id": thread_id}}
 
     emitted_log_count: int = 0
@@ -341,9 +381,18 @@ async def _ingest_sse_generator(
         return
 
     except Exception as exc:
-        log.exception("ingest.error", tenant_id=tenant_id, thread_id=thread_id, error=str(exc))
+        log.exception(
+            "ingest.error",
+            tenant_id=tenant_id,
+            thread_id=thread_id,
+            error=str(exc),
+        )
         yield _format_sse(
-            json.dumps({"error": str(exc), "tenant_id": tenant_id, "thread_id": thread_id}),
+            json.dumps({
+                "error": str(exc),
+                "tenant_id": tenant_id,
+                "thread_id": thread_id,
+            }),
             event="error",
         )
         return
@@ -391,12 +440,17 @@ async def ingest_stream(
     graph=Depends(get_ingestion_graph),
 ) -> StreamingResponse:
     thread_id: str = f"ingest-{tenant_id}-{uuid.uuid4()}"
-    log.info("ingest.started", tenant_id=tenant_id, thread_id=thread_id, file=request_body.file_path)
+    log.info(
+        "ingest.started",
+        tenant_id=tenant_id,
+        thread_id=thread_id,
+        object_key=request_body.object_key,
+    )
     return StreamingResponse(
         _ingest_sse_generator(
             graph=graph,
             tenant_id=tenant_id,
-            file_path=request_body.file_path,
+            object_key=request_body.object_key,
             file_format=request_body.file_format,
             thread_id=thread_id,
             review_feedback=request_body.review_feedback,
@@ -459,22 +513,20 @@ async def approve_ingestion(
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# CATALOGUE UPLOAD
+# CATALOGUE UPLOAD — V2.1: S3 via aioboto3 (services/storage.py)
 # ═════════════════════════════════════════════════════════════════════════════
 
-_ALLOWED_EXTENSIONS: Dict[str, str] = {".csv": "csv", ".json": "json", ".xlsx": "xlsx"}
-
-
 class UploadResponse(BaseModel):
-    file_path: str
+    # V2.1: object_key (S3) sostituisce file_path (filesystem locale).
+    # Da passare a IngestRequest.object_key per avviare l'ingestion.
+    object_key: str = Field(
+        ...,
+        description=(
+            "S3 Object Key del file caricato. "
+            "Passare a POST /ingest/stream come object_key."
+        ),
+    )
     file_format: Literal["csv", "json", "xlsx"]
-
-
-def _safe_tenant_dirname(tenant_id: str) -> str:
-    cleaned: str = re.sub(r"[^A-Za-z0-9_-]", "", tenant_id)
-    if not cleaned:
-        raise HTTPException(status_code=400, detail="tenant_id non valido.")
-    return cleaned
 
 
 @upload_router.post("/upload", response_model=UploadResponse, tags=["catalogue-upload"])
@@ -482,11 +534,33 @@ async def upload_catalogue(
     file: UploadFile = File(...),
     tenant_id: str = Depends(get_current_tenant_id),
 ) -> UploadResponse:
+    """
+    Upload a service catalogue file (CSV / JSON / XLSX) to S3.
+
+    Returns the S3 Object Key and the detected file format.
+    Pass ``object_key`` to ``POST /ingest/stream`` to start ingestion.
+
+    Security
+    --------
+    - Il nome originale del file non entra mai nella S3 Object Key (no path traversal).
+    - Object Key format: ``<safe_tenant_id>/<uuid_hex><.ext>``  (vedi services/storage.py).
+    - La dimensione è validata prima dell'upload (max: settings.upload_max_bytes).
+    """
     settings = get_settings()
-    ext: str = Path(file.filename or "").suffix.lower()
-    if ext not in _ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"Estensione non supportata: '{ext}'.")
-    file_format = _ALLOWED_EXTENSIONS[ext]
+
+    # Extension detection — split on last dot to handle names like "catalogue.v2.csv"
+    original_name: str = file.filename or ""
+    dot_idx: int = original_name.rfind(".")
+    ext_str: str = f".{original_name[dot_idx + 1:].lower()}" if dot_idx >= 0 else ""
+
+    if ext_str not in _ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Estensione non supportata: '{ext_str}'. Usa .csv, .json o .xlsx.",
+        )
+
+    file_format: str = _ALLOWED_EXTENSIONS[ext_str]
+    content_type: str = _CONTENT_TYPE_MAP[ext_str]
 
     contents: bytes = await file.read()
     if not contents:
@@ -494,18 +568,32 @@ async def upload_catalogue(
     if len(contents) > settings.upload_max_bytes:
         raise HTTPException(status_code=413, detail="File troppo grande.")
 
-    safe_tenant: str = _safe_tenant_dirname(tenant_id)
-    dest_dir: Path = (settings.upload_dir / safe_tenant).resolve()
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest_path: Path = dest_dir / f"{uuid.uuid4().hex}{ext}"
-
     try:
-        dest_path.write_bytes(contents)
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail="Impossibile salvare il file.") from exc
+        object_key: str = await upload_file(
+            contents=contents,
+            content_type=content_type,
+            tenant_id=tenant_id,
+            extension=ext_str,
+        )
+    except (ClientError, BotoCoreError) as exc:
+        log.error("upload.s3_error", tenant_id=tenant_id, error=str(exc))
+        raise HTTPException(
+            status_code=502,
+            detail="Impossibile caricare il file su S3. Riprovare tra qualche istante.",
+        ) from exc
+    except Exception as exc:
+        log.exception("upload.unexpected_error", tenant_id=tenant_id)
+        raise HTTPException(
+            status_code=500, detail="Errore interno durante l'upload."
+        ) from exc
 
-    log.info("upload.saved", tenant_id=safe_tenant, path=str(dest_path), format=file_format)
-    return UploadResponse(file_path=str(dest_path), file_format=file_format)  # type: ignore[arg-type]
+    log.info(
+        "upload.complete",
+        tenant_id=tenant_id,
+        object_key=object_key,
+        format=file_format,
+    )
+    return UploadResponse(object_key=object_key, file_format=file_format)  # type: ignore[arg-type]
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -528,6 +616,13 @@ class TenantProfile(BaseModel):
     logo_data_url: str = ""
 
 
+def _safe_tenant_dirname(tenant_id: str) -> str:
+    cleaned: str = re.sub(r"[^A-Za-z0-9_-]", "", tenant_id)
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="tenant_id non valido.")
+    return cleaned
+
+
 @profile_router.get("/tenants/{tenant_id}/profile", response_model=TenantProfile)
 async def get_tenant_profile(
     tenant_id: str,
@@ -538,7 +633,7 @@ async def get_tenant_profile(
         raise HTTPException(status_code=403, detail="Accesso negato.")
     safe: str = _safe_tenant_dirname(tenant_id)
     try:
-        data: Dict[str, Any] | None = await get_profile(safe)
+        data: Optional[Dict[str, Any]] = await get_profile(safe)
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Errore lettura profilo.") from exc
     if data is None:
@@ -561,7 +656,10 @@ async def put_tenant_profile(
     body.tenant_id = safe
 
     if body.logo_data_url and not body.logo_data_url.startswith("data:image/"):
-        raise HTTPException(status_code=400, detail="logo_data_url deve essere un data URL immagine.")
+        raise HTTPException(
+            status_code=400,
+            detail="logo_data_url deve essere un data URL immagine.",
+        )
 
     raw: str = json.dumps(body.model_dump(), ensure_ascii=False)
     if len(raw.encode("utf-8")) > settings.profile_max_bytes:
@@ -570,7 +668,9 @@ async def put_tenant_profile(
     try:
         await upsert_profile(safe, body.model_dump())
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="Impossibile salvare il profilo.") from exc
+        raise HTTPException(
+            status_code=500, detail="Impossibile salvare il profilo."
+        ) from exc
 
     return body
 
@@ -590,12 +690,18 @@ class TokenResponse(BaseModel):
 
 
 @auth_router.post("/token", response_model=TokenResponse)
-async def get_token(body: TokenRequest) -> TokenResponse:
+@limiter.limit(get_settings().rate_limit_token)
+async def get_token(
+    request: Request,
+    body: TokenRequest,
+) -> TokenResponse:
     """
     Emit a JWT RS256 token for the given username (tenant_id).
 
     Dev/test only. Disable in production by setting TOKEN_ENDPOINT_ENABLED=false.
     Returns 404 when disabled so the endpoint reveals nothing to attackers.
+
+    Rate limited: see ``settings.rate_limit_token`` (default: 5/minute per IP).
     """
     if not get_settings().token_endpoint_enabled:
         raise HTTPException(status_code=404, detail="Not found.")
@@ -639,13 +745,17 @@ async def wipe_tenant_vector_data(
         )
 
     try:
-        rows_deleted = await wipe_tenant(tenant_id)
+        rows_deleted: int = await wipe_tenant(tenant_id)
     except Exception as exc:
         log.exception("admin.wipe_failed", tenant_id=tenant_id)
-        raise HTTPException(status_code=500, detail="Errore durante il wipe.") from exc
+        raise HTTPException(
+            status_code=500, detail="Errore durante il wipe."
+        ) from exc
 
     return WipeTenantResponse(
         tenant_id=tenant_id,
         rows_deleted=rows_deleted,
-        message=f"Eliminati {rows_deleted} item vettoriali per il tenant '{tenant_id}'.",
+        message=(
+            f"Eliminati {rows_deleted} item vettoriali per il tenant '{tenant_id}'."
+        ),
     )

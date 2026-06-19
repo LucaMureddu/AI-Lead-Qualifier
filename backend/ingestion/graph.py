@@ -73,9 +73,9 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import io
 import json
 import logging
-from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import ValidationError
@@ -98,13 +98,15 @@ Individual items auto-flag when their confidence < 0.5 (enforced by ServiceItem)
 # 1. ChunkingNode
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _read_csv(path: Path) -> List[Dict[str, Any]]:
-    with path.open(newline="", encoding="utf-8-sig") as fh:
-        return list(csv.DictReader(fh))
+def _read_csv(content: bytes) -> List[Dict[str, Any]]:
+    """Parse CSV bytes in memory — no filesystem access."""
+    text: str = content.decode("utf-8-sig")
+    return list(csv.DictReader(io.StringIO(text)))
 
 
-def _read_json(path: Path) -> List[Dict[str, Any]]:
-    data: Any = json.loads(path.read_text(encoding="utf-8"))
+def _read_json(content: bytes) -> List[Dict[str, Any]]:
+    """Parse JSON bytes in memory — no filesystem access."""
+    data: Any = json.loads(content.decode("utf-8"))
     if isinstance(data, list):
         return data
     # Support {"items": [...]} or {"data": [...]} wrappers
@@ -117,7 +119,8 @@ def _read_json(path: Path) -> List[Dict[str, Any]]:
     )
 
 
-def _read_xlsx(path: Path) -> List[Dict[str, Any]]:
+def _read_xlsx(content: bytes) -> List[Dict[str, Any]]:
+    """Parse XLSX bytes in memory via BytesIO — no filesystem access."""
     try:
         import openpyxl  # type: ignore[import]
     except ImportError as exc:
@@ -126,17 +129,62 @@ def _read_xlsx(path: Path) -> List[Dict[str, Any]]:
             "Install it with: pip install openpyxl"
         ) from exc
 
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     ws = wb.active
     rows = list(ws.iter_rows(values_only=True))
     if not rows:
         return []
-    headers: List[str] = [str(h) if h is not None else f"col_{i}" for i, h in enumerate(rows[0])]
+    headers: List[str] = [
+        str(h) if h is not None else f"col_{i}" for i, h in enumerate(rows[0])
+    ]
     return [
         {headers[i]: cell for i, cell in enumerate(row)}
         for row in rows[1:]
-        if any(cell is not None for cell in row)   # skip blank rows
+        if any(cell is not None for cell in row)  # skip blank rows
     ]
+
+
+def _row_to_text(row: Dict[str, Any]) -> str:
+    """
+    Convert a raw dict row into a ``key: value`` text block.
+
+    This is the core of the schema-agnostic approach: every column, regardless
+    of its name (``nome_servizio``, ``costo``, ``note``…), is preserved verbatim
+    in the output text.  LangChain documents and pgvector embeddings built from
+    this text allow the RAG LLM to infer semantics at query time.
+    """
+    return "\n".join(
+        f"{k}: {v}"
+        for k, v in row.items()
+        if v is not None and str(v).strip()
+    )
+
+
+def _read_pdf(content: bytes) -> List[Dict[str, Any]]:
+    """
+    Extract text from PDF bytes — no filesystem access.
+
+    Each page becomes one row: ``{"page": "<n>", "content": "<page_text>"}``.
+    This mirrors the key-value structure produced by the CSV/JSON/XLSX readers
+    so the rest of the pipeline (normaliser, embeddings) handles PDFs identically.
+
+    Requires ``pypdf`` (``pip install pypdf``).
+    """
+    try:
+        import pypdf  # type: ignore[import]
+    except ImportError as exc:
+        raise ImportError(
+            "pypdf is required for PDF ingestion.  "
+            "Install it with: pip install pypdf"
+        ) from exc
+
+    reader = pypdf.PdfReader(io.BytesIO(content))
+    rows: List[Dict[str, Any]] = []
+    for page_num, page in enumerate(reader.pages, start=1):
+        text = (page.extract_text() or "").strip()
+        if text:
+            rows.append({"page": str(page_num), "content": text})
+    return rows
 
 
 def _split_chunks(rows: List[Dict[str, Any]], size: int) -> List[List[Dict[str, Any]]]:
@@ -145,38 +193,54 @@ def _split_chunks(rows: List[Dict[str, Any]], size: int) -> List[List[Dict[str, 
 
 async def chunker_node(state: IngestionState) -> Dict:
     """
-    ChunkingNode — reads the source file and splits it into batches.
+    ChunkingNode — downloads the file from S3 and splits it into batches.
+
+    V2.1: ``source_file`` is now an S3 Object Key (e.g. ``tenant/uuid.csv``),
+    not a local filesystem path.  The node downloads the content via
+    ``services.storage.download_file()`` and parses it entirely in memory
+    via io.StringIO / io.BytesIO — no writes to the container filesystem.
 
     Supported formats: CSV, JSON, Excel (xlsx).
     The ``file_format`` field in state is authoritative (not inferred).
     """
-    source_file: str = state["source_file"]
+    from services.storage import download_file  # noqa: PLC0415
+
+    object_key: str = state["source_file"]   # holds the S3 Object Key since V2.1
     file_format: str = state["file_format"]
     tenant_id: str = state["tenant_id"]
-    path: Path = Path(source_file)
 
-    logger.info("[chunker] tenant=%s | file=%s | format=%s", tenant_id, source_file, file_format)
+    logger.info(
+        "[chunker] tenant=%s | object_key=%s | format=%s",
+        tenant_id, object_key, file_format,
+    )
 
-    if not path.exists():
-        error_msg = f"[chunker] File not found: {source_file}"
+    readers = {"csv": _read_csv, "json": _read_json, "xlsx": _read_xlsx, "pdf": _read_pdf}
+    if file_format not in readers:
+        error_msg = f"[chunker] Unsupported format '{file_format}'. Use csv | json | xlsx | pdf."
         logger.error(error_msg)
         return {"raw_chunks": [], "sse_logs": [f"[ERROR] {error_msg}"], "error": error_msg}
 
+    # ── Download from S3 ──────────────────────────────────────────────────────
     try:
-        readers = {"csv": _read_csv, "json": _read_json, "xlsx": _read_xlsx}
-        if file_format not in readers:
-            raise ValueError(f"Unsupported format '{file_format}'. Use csv | json | xlsx.")
-        rows: List[Dict[str, Any]] = await asyncio.to_thread(readers[file_format], path)
+        content: bytes = await download_file(object_key)
     except Exception as exc:  # noqa: BLE001
-        error_msg = f"[chunker] Failed to read {source_file}: {exc}"
+        error_msg = f"[chunker] S3 download failed for key '{object_key}': {exc}"
+        logger.exception(error_msg)
+        return {"raw_chunks": [], "sse_logs": [f"[ERROR] {error_msg}"], "error": error_msg}
+
+    # ── Parse in memory ───────────────────────────────────────────────────────
+    try:
+        rows: List[Dict[str, Any]] = await asyncio.to_thread(readers[file_format], content)
+    except Exception as exc:  # noqa: BLE001
+        error_msg = f"[chunker] Failed to parse '{object_key}' as {file_format}: {exc}"
         logger.exception(error_msg)
         return {"raw_chunks": [], "sse_logs": [f"[ERROR] {error_msg}"], "error": error_msg}
 
     chunk_size: int = get_settings().ingestion_chunk_size
     chunks = _split_chunks(rows, chunk_size)
     log_entry = (
-        f"[CHUNKER] tenant={tenant_id} | rows={len(rows)} | "
-        f"chunks={len(chunks)} | chunk_size={chunk_size}"
+        f"[CHUNKER] tenant={tenant_id} | object_key={object_key} | "
+        f"rows={len(rows)} | chunks={len(chunks)} | chunk_size={chunk_size}"
     )
     logger.info(log_entry)
 
@@ -202,24 +266,32 @@ async def chunker_node(state: IngestionState) -> Dict:
 
 _NORMALIZER_SYSTEM_PROMPT: str = """
 You are a B2B data normalisation agent.  Your job is to map raw service catalogue
-rows (which may have inconsistent field names and formats) to a canonical JSON schema.
+rows — which may have ANY column names, in ANY language — to a canonical JSON schema.
+
+The source data may use column names like "nome_servizio", "costo", "note",
+"Leistungsname", "tarif", "prix_unitaire", "descripcion", or anything else.
+Map them semantically to the target schema based on meaning, not exact key names.
 
 Target schema for each item (return a JSON array of these objects):
 {
-  "name":        string  — required, human-readable service name
-  "description": string  — optional, free-text description
-  "category":    string  — optional, service category / product line
-  "price":       number  — required, unit price (must be >= 0; use 0.0 if unknown)
-  "currency":    string  — ISO 4217 code, default "EUR"
-  "unit":        string  — optional billing unit: "hour"|"month"|"year"|"project"|"license"|"user"|"one-time"
+  "name":        string  — required; best available service name (use any name-like column)
+  "description": string  — optional; combine description, note, or comment-like columns
+  "category":    string  — optional; service category or product line if present
+  "price":       number  — optional; unit price >= 0.  Set to 0.0 if unknown or not found.
+  "currency":    string  — ISO 4217 code, default "EUR".  Infer from symbol if present.
+  "unit":        string  — optional; billing unit: "hour"|"month"|"year"|"project"|"license"|"user"|"one-time"
   "confidence":  number  — your confidence in this mapping, between 0.0 and 1.0
 }
 
 Rules:
 - Return ONLY a valid JSON array.  No markdown, no commentary.
-- If you cannot confidently map a required field, set confidence <= 0.6.
+- ALL fields except "name" are optional — use null if the column is absent or ambiguous.
+- For "name": if no clear name column exists, use the first non-empty column value.
+- For "price": use 0.0 (not null) when the price cannot be determined; set confidence <= 0.6.
 - Negative prices are invalid; use 0.0 and set confidence <= 0.5.
 - Preserve the original currency symbol if present (€ → EUR, $ → USD, £ → GBP).
+- If a row has only a "content" key (PDF page), treat the full text as the description
+  and extract name/price from it semantically.
 """.strip()
 
 
@@ -292,11 +364,24 @@ def _parse_normalizer_response(
             items.append(item)
         except (ValidationError, TypeError) as exc:
             logger.warning("[normalizer] ServiceItem construction failed for row %d: %s", i, exc)
-            # Create a minimal flagged placeholder so the row isn't silently dropped
+            # Schema-agnostic name fallback: try common name-like keys first,
+            # then pick the first non-empty value from any column in the raw row.
+            _name_candidates = ["name", "service", "nome", "nome_servizio", "titolo",
+                                 "prodotto", "leistung", "description", "content"]
+            name_fallback: str = next(
+                (str(raw_row[k]) for k in _name_candidates if raw_row.get(k)),
+                next(
+                    (str(v) for v in raw_row.values() if v and str(v).strip()),
+                    f"UNKNOWN_ROW_{i}",
+                ),
+            )
+            # Create a minimal flagged placeholder so the row isn't silently dropped.
+            # Store the full raw row text in description for RAG retrievability.
             items.append(
                 ServiceItem(
                     tenant_id=tenant_id,
-                    name=str(raw_row.get("name", f"UNKNOWN_ROW_{i}")),
+                    name=name_fallback[:200],  # cap at 200 chars
+                    description=_row_to_text(raw_row),
                     price=0.0,
                     confidence=0.0,
                     raw_data=safe_raw_data,
@@ -568,14 +653,21 @@ async def _write_to_pgvector(
         return 0
 
     # ── 1. Costruisci le descrizioni (testo da embeddare) ─────────────────────
+    # Schema-agnostic: include ALL raw source columns in the embedding text so
+    # that the RAG LLM can infer prices/services from ANY column naming convention.
     descriptions: List[str] = []
     for item in items:
-        text: str = item.name
+        parts: List[str] = [item.name]
         if item.description:
-            text += f" — {item.description}"
+            parts.append(item.description)
         if item.category:
-            text += f" [{item.category}]"
-        descriptions.append(text)
+            parts.append(f"[{item.category}]")
+        # Append the full raw row so foreign-language / custom column names
+        # (e.g. "nome_servizio", "costo", "note") are embedded verbatim.
+        raw_text: str = _row_to_text(item.raw_data)
+        if raw_text:
+            parts.append(raw_text)
+        descriptions.append(" — ".join(parts))
 
     # ── 2. Batch embedding asincrono via Ollama ───────────────────────────────
     # aembed_documents logga solo batch_size e tenant_id in caso di errore,
@@ -596,7 +688,9 @@ async def _write_to_pgvector(
     pgvector_items: List[Dict[str, Any]] = [
         {
             "service": item.name,
-            "price": item.price,
+            # price is always a float (default 0.0) — DB column is NOT NULL FLOAT.
+            "price": item.price if item.price is not None else 0.0,
+            # description now contains the full row text (schema-agnostic embedding).
             "description": descriptions[idx],
             "embedding": embeddings[idx],
             "metadata": {
@@ -606,6 +700,12 @@ async def _write_to_pgvector(
                 "tenant_id": tenant_id,
                 "ingested_at": item.ingested_at.isoformat(),
                 "id": item.id,
+                # True when the original source had no price ("da preventivare" / null).
+                # Preserved here so downstream nodes can distinguish "free" (0.0 €) from
+                # "on request" (unknown price coerced to 0.0 for the NOT NULL column).
+                "is_on_request": item.price is None,
+                # Preserve raw source columns in metadata for full auditability.
+                "raw_data": item.raw_data,
             },
         }
         for idx, item in enumerate(items)
@@ -802,7 +902,7 @@ def build_ingestion_graph(checkpointer=None):
 def make_initial_state(
     tenant_id: str,
     source_file: str,
-    file_format: Literal["csv", "json", "xlsx"],
+    file_format: Literal["csv", "json", "xlsx", "pdf"],
     review_feedback: Optional[str] = None,
 ) -> IngestionState:
     """
@@ -813,7 +913,9 @@ def make_initial_state(
     tenant_id : str
         Tenant identifier — scopes all DB writes.
     source_file : str
-        Absolute path to the file to ingest.
+        S3 Object Key of the file to ingest (V2.1: was an absolute filesystem
+        path in V2.0; now always an S3 key such as ``tenant/uuid.csv``).
+        The chunker_node downloads the file from S3 via download_file().
     file_format : "csv" | "json" | "xlsx"
         Explicit format declaration.
     review_feedback : str | None

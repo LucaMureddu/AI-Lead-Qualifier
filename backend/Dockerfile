@@ -28,12 +28,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # ── Cartelle per i volumi persistenti ────────────────────────────────────────
-# Queste directory vengono montate come volumi in docker-compose.yml.
-# Senza il VOLUME dichiarato qui, ogni restart del container cancellerebbe
-# il database SQLite e tutti i CSV caricati.
-RUN mkdir -p /app/data /app/uploads
+# V2.1: /app/uploads rimosso — i file catalogo sono ora su S3 (MinIO/AWS).
+# Il container è completamente stateless: nessun dato persistente su disco.
+# Solo /app/data è mantenuto per compatibilità con eventuali script one-shot.
+RUN mkdir -p /app/data
 
-VOLUME ["/app/data", "/app/uploads"]
+VOLUME ["/app/data"]
 
 # ── Porta ────────────────────────────────────────────────────────────────────
 EXPOSE 8000

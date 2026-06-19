@@ -249,7 +249,7 @@ export async function ingestStream(payload, { onEvent, onMeta, signal } = {}) {
 }
 
 /**
- * POST /upload — upload a catalogue file, returns { file_path, file_format }.
+ * POST /upload — upload a catalogue file, returns { object_key, file_format }.
  */
 export async function uploadCatalogue(file) {
   const form = new FormData();

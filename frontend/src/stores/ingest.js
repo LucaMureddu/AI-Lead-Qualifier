@@ -67,15 +67,15 @@ export default {
     this.error = null;
 
     try {
-      // 1. Upload file → get server path
-      const { file_path, file_format } = await uploadCatalogue(this.file);
-      this.filePath = file_path;
+      // 1. Upload file → get S3 object key
+      const { object_key, file_format } = await uploadCatalogue(this.file);
+      this.filePath = object_key;
       this.fileFormat = file_format;
 
       // 2. Start ingestion SSE stream
       this.phase = "processing";
       await ingestStream(
-        { file_path, file_format, review_feedback: null },
+        { object_key, file_format, review_feedback: null },
         {
           onMeta: ({ threadId }) => { if (threadId) this.threadId = threadId; },
           onEvent: (frame) => {
