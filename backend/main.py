@@ -70,7 +70,7 @@ from core.logging_setup import configure_logging
 from core.rate_limit import limiter
 from database.db_core import close_pool, get_pool
 from ingestion.graph import build_ingestion_graph
-from services.storage import close_storage
+from services.storage import close_storage, get_session, init_storage
 
 log = structlog.get_logger()
 
@@ -124,9 +124,12 @@ async def lifespan(app: FastAPI):
     app.state.redis = await arq_create_pool(RedisSettings.from_dsn(settings.redis_dsn))
     log.info("startup.arq_pool_ready")
 
-    # 6. aioboto3 storage session — lazy singleton in services/storage.py.
-    #    Nessuna connessione viene aperta qui: il client S3 è creato per ogni
-    #    operazione. Log del solo endpoint, mai delle credenziali.
+    # 6. aioboto3 storage session — eagerly initialise the singleton defined in
+    #    services/storage.py so it is not created lazily on the first request
+    #    or health check (which would open a second, orphaned session if /health
+    #    ran first). Calling init_storage() here also makes the startup log
+    #    deterministic. Only the endpoint is logged, never the credentials.
+    init_storage()
     log.info("startup.storage_ready", s3_endpoint=settings.s3_endpoint_url)
 
     yield  # ── application running ─────────────────────────────────────────
@@ -207,8 +210,8 @@ def create_app() -> FastAPI:
             await pool.fetchval("SELECT 1")
             checks["postgres"] = "ok"
         except Exception as exc:
-            log.error("health.postgres_failed", error=str(exc))
-            checks["postgres"] = f"error: {exc}"
+            log.error("health.postgres_failed", error_type=type(exc).__name__)
+            checks["postgres"] = f"error: {type(exc).__name__}"
             failed = True
 
         # ── Redis (ARQ + slowapi) ─────────────────────────────────────────────
@@ -217,27 +220,26 @@ def create_app() -> FastAPI:
             await redis.ping()
             checks["redis"] = "ok"
         except Exception as exc:
-            log.error("health.redis_failed", error=str(exc))
-            checks["redis"] = f"error: {exc}"
+            log.error("health.redis_failed", error_type=type(exc).__name__)
+            checks["redis"] = f"error: {type(exc).__name__}"
             failed = True
 
         # ── S3 / MinIO ────────────────────────────────────────────────────────
+        # Reuse the process-scoped aioboto3 Session from services/storage.py
+        # (initialised in lifespan via init_storage()). Creating a new Session
+        # per health check would open an orphaned session on every probe call,
+        # eventually exhausting file descriptors and boto3 connection pools.
         try:
-            import aioboto3
             from botocore.exceptions import BotoCoreError, ClientError
 
-            s3_session = aioboto3.Session(
-                aws_access_key_id=settings.s3_access_key,
-                aws_secret_access_key=settings.s3_secret_key,
-            )
-            async with s3_session.client(
+            async with get_session().client(
                 "s3", endpoint_url=settings.s3_endpoint_url
             ) as s3:
                 await s3.head_bucket(Bucket=settings.s3_bucket_name)
             checks["s3"] = "ok"
         except (ClientError, BotoCoreError, Exception) as exc:
-            log.error("health.s3_failed", error=str(exc))
-            checks["s3"] = f"error: {exc}"
+            log.error("health.s3_failed", error_type=type(exc).__name__)
+            checks["s3"] = f"error: {type(exc).__name__}"
             failed = True
 
         status_code = 503 if failed else 200

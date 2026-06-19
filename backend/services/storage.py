@@ -57,8 +57,15 @@ log = structlog.get_logger()
 _session: Optional[aioboto3.Session] = None
 
 
-def _get_session() -> aioboto3.Session:
-    """Return the shared aioboto3 Session, initialising it on first call."""
+def get_session() -> aioboto3.Session:
+    """
+    Return the shared aioboto3 Session, initialising it on first call.
+
+    Public so that callers outside this module (e.g. the /health endpoint)
+    can reuse the same session without creating a second one.  The Session
+    itself holds no open network connections — only clients do — so sharing
+    it is safe and avoids double-initialisation overhead.
+    """
     global _session
     if _session is None:
         settings = get_settings()
@@ -68,6 +75,19 @@ def _get_session() -> aioboto3.Session:
         )
         log.info("storage.session_created", endpoint=settings.s3_endpoint_url)
     return _session
+
+
+def init_storage() -> None:
+    """
+    Eagerly initialise the aioboto3 Session at application startup.
+
+    Call this from the FastAPI lifespan so the session is created once during
+    startup rather than lazily on the first upload request or health check.
+    This makes startup logs deterministic and prevents a cold-start delay on
+    the first request after deployment.
+    """
+    get_session()
+    log.info("storage.session_ready")
 
 
 def close_storage() -> None:
@@ -148,7 +168,7 @@ async def upload_file(
     )
 
     try:
-        async with _get_session().client(
+        async with get_session().client(
             "s3",
             endpoint_url=settings.s3_endpoint_url,
         ) as client:
@@ -205,7 +225,7 @@ async def get_presigned_url(
     log.debug("storage.presign_start", object_key=object_key, expires_in=expires_in)
 
     try:
-        async with _get_session().client(
+        async with get_session().client(
             "s3",
             endpoint_url=settings.s3_endpoint_url,
         ) as client:
@@ -257,7 +277,7 @@ async def download_file(object_key: str) -> bytes:
     log.info("storage.download_start", object_key=object_key)
 
     try:
-        async with _get_session().client(
+        async with get_session().client(
             "s3",
             endpoint_url=settings.s3_endpoint_url,
         ) as client:
@@ -304,7 +324,7 @@ async def delete_file(object_key: str) -> None:
     log.info("storage.delete_start", object_key=object_key)
 
     try:
-        async with _get_session().client(
+        async with get_session().client(
             "s3",
             endpoint_url=settings.s3_endpoint_url,
         ) as client:

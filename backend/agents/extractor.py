@@ -90,10 +90,52 @@ def _call_groq(prompt_system: str, prompt_user: str) -> str:
     return response.choices[0].message.content or ""
 
 
+
+# ── Llama model singleton ─────────────────────────────────────────────────────
+# Loading a GGUF model from disk is expensive: it allocates GPU/CPU memory and
+# takes hundreds of milliseconds. Re-loading it on every extractor call (or on
+# every ARQ job) would saturate memory and destroy throughput.
+# This singleton is initialised once per process (ARQ worker or FastAPI) and
+# shared across all subsequent calls. Not thread-safe for parallel invocations,
+# but ARQ workers run one job at a time (ARQ_MAX_JOBS=1) so concurrent access
+# is not a concern in the default configuration.
+
+_llama_instance: "Any | None" = None
+
+
+def _get_llama_model() -> "Any":
+    """
+    Return the process-scoped Llama model, loading it on first call.
+
+    Model path and context window come from Settings — nothing is hardcoded.
+    A structured log event is emitted only at load time, not on every call.
+
+    Raises
+    ------
+    RuntimeError
+        If the GGUF file does not exist at the configured path.
+    """
+    global _llama_instance
+    if _llama_instance is None:
+        from llama_cpp import Llama  # type: ignore[import]
+
+        settings = get_settings()
+        model_path: str = str(settings.llm_model_path)
+        if not settings.llm_model_path.exists():
+            raise RuntimeError(
+                f"GGUF model not found at '{model_path}'. "
+                "Set LLM_MODEL_PATH to a valid .gguf file path."
+            )
+        log.info("llama.model_loading", model_path=model_path)
+        _llama_instance = Llama(model_path=model_path, n_ctx=2048, verbose=False)
+        log.info("llama.model_ready", model_path=model_path)
+    return _llama_instance
+
+
 def _call_llama(prompt_system: str, prompt_user: str) -> str:
-    from llama_cpp import Llama  # type: ignore[import]
+    """Call the local GGUF model via the process-scoped singleton."""
     settings = get_settings()
-    llm = Llama(model_path=str(settings.llm_model_path), n_ctx=2048, verbose=False)
+    llm = _get_llama_model()
     response = llm.create_chat_completion(
         messages=[
             {"role": "system", "content": prompt_system},
