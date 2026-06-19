@@ -163,11 +163,46 @@ startup.arq_pool_ready
 
 ### 3. Test
 
+Prima di eseguire i test localmente, genera le chiavi JWT (necessarie anche per i test di integrazione):
+
+```bash
+mkdir -p backend/keys
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out backend/keys/private.pem
+openssl rsa -pubout -in backend/keys/private.pem -out backend/keys/public.pem
+```
+
 ```bash
 make install          # Installa dipendenze di sviluppo nel venv locale
 make test             # Unit + Integration (Testcontainers per Postgres/Redis)
 make eval-local       # Evals LIVE con modello LLM reale (richiede Ollama sull'host)
 ```
+
+La suite è divisa in tre livelli tramite marker pytest:
+
+| Marker | Cosa copre | Richiede |
+|---|---|---|
+| `unit` | Logica pura, nessuna I/O | — |
+| `integration` | Nodi e grafi con LLM/DB mockati | Chiavi JWT |
+| `vector_store` | pgvector con container reale (Testcontainers) | Docker + chiavi JWT |
+| `eval_live` | LLM-as-a-judge end-to-end | Ollama + Postgres con catalogo ingestito |
+
+Per eseguire solo una categoria:
+
+```bash
+# Solo unit test
+pytest -m unit
+
+# Solo integration (no Docker)
+pytest -m integration
+
+# Solo pgvector (avvia container Docker automaticamente)
+pytest -m vector_store
+
+# Evals LIVE (richiede stack completo attivo)
+pytest -m eval_live -v
+```
+
+**CI pipeline** (GitHub Actions): i job `Lint & Type-check`, `Test — Unit + eval_ci` e `Test — Integration pgvector` girano in parallelo ad ogni push. Gli evals live (`eval_live`) sono esclusi dalla CI e si eseguono solo manualmente.
 
 ---
 
