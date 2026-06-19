@@ -17,6 +17,8 @@ run_ingestion_task            — run the catalogue ingestion graph
 
 from __future__ import annotations
 
+from typing import Literal
+
 import structlog
 
 from core.state import AgentState, LeadContext
@@ -119,7 +121,7 @@ async def run_ingestion_task(
     thread_id: str,
     tenant_id: str,
     file_path: str,
-    file_format: str,
+    file_format: Literal["csv", "json", "xlsx"],
     review_feedback: str | None = None,
 ) -> dict:
     """

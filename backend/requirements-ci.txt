@@ -23,6 +23,7 @@ python-multipart>=0.0.9
 
 # ── LangGraph + LangChain ─────────────────────────────────────────────────────
 langgraph>=0.2.0
+langgraph-checkpoint-sqlite>=2.0.0        # AsyncSqliteSaver usato dai test
 langgraph-checkpoint-postgres>=0.1.0
 langchain-core>=0.2.0
 langchain-community>=0.2.0             # OllamaEmbeddings (mockato in CI)

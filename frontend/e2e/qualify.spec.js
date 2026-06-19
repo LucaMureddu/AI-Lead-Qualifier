@@ -55,7 +55,7 @@ test("testo → preventivo con servizi mappati", async ({ page }) => {
   await page.getByRole("button", { name: /Genera Preventivo AI/ }).click();
 
   await expect(page.getByTestId("quote-total")).toHaveText("2500.00 €");
-  await expect(page.getByText("Sviluppo Sito")).toBeVisible();
+  await expect(page.getByTestId("service-name").filter({ hasText: "Sviluppo Sito" })).toBeVisible();
   // Il badge diventa "API Connected" dopo il primo /health ok.
   await expect(page.getByText("API Connected").first()).toBeVisible();
 });

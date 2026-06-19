@@ -308,7 +308,7 @@
                       <template x-for="(svc, i) in ($store.qualify.result.mapped_services || [])" :key="i">
                         <li class="flex items-start justify-between gap-3 py-2.5">
                           <div class="min-w-0">
-                            <p class="font-medium text-slate-800 truncate" x-text="svc.matched_name || svc.service || '—'"></p>
+                            <p class="font-medium text-slate-800 truncate" data-testid="service-name" x-text="svc.matched_name || svc.service || '—'"></p>
                             <p class="text-xs text-slate-400" x-text="'distanza: ' + (svc.distance != null ? Number(svc.distance).toFixed(4) : 'n/d')"></p>
                           </div>
                           <p class="font-semibold text-slate-800 whitespace-nowrap" x-text="ui.formatMoney(svc.price) + ' ' + (svc.unit || '€')"></p>
