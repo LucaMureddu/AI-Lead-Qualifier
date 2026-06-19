@@ -12,6 +12,12 @@ Score formula
     avg_distance  = mean cosine distance of retrieved_docs (lower = better match)
     score         = mapped_ratio * (1.0 - min(avg_distance, 1.0))
 
+    Special cases:
+    - No extracted_services  → score = 0.0 (nothing to qualify)
+    - No retrieved_docs      → score = mapped_ratio (distance factor omitted;
+                               the mapper found matches but returned no doc
+                               metadata, so we trust the coverage signal alone)
+
 Range: [0.0, 1.0]. The router in core/graph.py routes to calculator if score >= 0.75,
 otherwise to extractor (retry) or hitl_interrupt (if retries exhausted).
 
@@ -48,6 +54,7 @@ async def evaluator_node(state: AgentState) -> Dict:
     retrieved = state.get("retrieved_docs", [])
 
     if not extracted:
+        # Nothing was extracted — no basis to qualify.
         score = 0.0
     else:
         mapped_ratio = len(mapped) / len(extracted)
@@ -55,11 +62,15 @@ async def evaluator_node(state: AgentState) -> Dict:
             avg_distance = sum(
                 d.metadata.get("distance", 1.0) for d in retrieved
             ) / len(retrieved)
+            # High coverage + low cosine distance = high confidence.
+            score = mapped_ratio * (1.0 - min(avg_distance, 1.0))
         else:
-            avg_distance = 1.0
-
-        # High coverage + low cosine distance = high confidence
-        score = mapped_ratio * (1.0 - min(avg_distance, 1.0))
+            # No retrieved_docs means the vector store returned no metadata
+            # (e.g. empty catalogue or mapper skipped the distance lookup).
+            # We cannot penalise with avg_distance=1.0 (that would always
+            # force HITL even when the mapper found good matches).
+            # Fall back to mapped_ratio alone as the confidence signal.
+            score = mapped_ratio
 
     settings = get_settings()
     retry: int = state.get("retry_count", 0)

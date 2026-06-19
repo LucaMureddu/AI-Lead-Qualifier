@@ -531,9 +531,11 @@ class TenantProfile(BaseModel):
 @profile_router.get("/tenants/{tenant_id}/profile", response_model=TenantProfile)
 async def get_tenant_profile(
     tenant_id: str,
-    _jwt_tenant: str = Depends(get_current_tenant_id),
+    jwt_tenant: str = Depends(get_current_tenant_id),
 ) -> TenantProfile:
     """Return the tenant profile from Postgres. Returns an empty default if not found."""
+    if jwt_tenant != tenant_id:
+        raise HTTPException(status_code=403, detail="Accesso negato.")
     safe: str = _safe_tenant_dirname(tenant_id)
     try:
         data: Dict[str, Any] | None = await get_profile(safe)
@@ -549,9 +551,11 @@ async def get_tenant_profile(
 async def put_tenant_profile(
     tenant_id: str,
     body: TenantProfile,
-    _jwt_tenant: str = Depends(get_current_tenant_id),
+    jwt_tenant: str = Depends(get_current_tenant_id),
 ) -> TenantProfile:
     """Upsert the tenant profile in Postgres."""
+    if jwt_tenant != tenant_id:
+        raise HTTPException(status_code=403, detail="Accesso negato.")
     settings = get_settings()
     safe: str = _safe_tenant_dirname(tenant_id)
     body.tenant_id = safe

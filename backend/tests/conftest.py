@@ -5,40 +5,65 @@ Fixture condivise per l'intera suite (vedi TESTING_PLAN.md §2.3).
 
 Obiettivo: isolare ogni test da servizi esterni e dallo stato globale.
 - get_settings() è cachata con @lru_cache → va svuotata fra i test.
-- Il checkpointer LangGraph gira su SQLite ``:memory:`` (niente file su disco).
+- Il checkpointer LangGraph usa AsyncPostgresSaver su un container Postgres
+  reale (Testcontainers), allineato con il checkpointer di produzione.
 - ``make_lead_state`` costruisce un LeadState valido (con tenant_id!).
 - ``api_client`` parla con l'app via httpx.ASGITransport (no rete, no porta).
 
-LLM e ChromaDB NON vengono mai contattati: i singoli test mockano i confini
+LLM NON viene mai contattato: i singoli test mockano i confini
 esterni (es. ``agents.extractor._call_openai_compatible`` o
 ``core.graph.mapper_node``).
+
+Checkpointer Postgres (Testcontainers)
+---------------------------------------
+``pg_checkpointer_container`` (scope=session) avvia un container
+``postgres:16`` una sola volta per l'intera sessione. Non usa pgvector
+perché il checkpointer LangGraph non ne ha bisogno.
+
+``checkpointer`` (scope=function) crea un AsyncPostgresSaver collegato al
+container, chiama setup() per creare le tabelle LangGraph, e lo teardown
+dopo ogni test. Ogni test riceve un checkpointer pulito (le tabelle vengono
+troncate nel teardown).
+
+Perché non AsyncSqliteSaver?
+-----------------------------
+AsyncPostgresSaver e AsyncSqliteSaver hanno comportamenti leggermente
+diversi sulla gestione degli interrupt/resume (serializzazione msgpack vs
+JSON, semantica delle transazioni). Usare lo stesso backend in test e
+produzione elimina una classe di bug che altrimenti emergerebbero solo
+in staging.
 """
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator, Generator
 from typing import Callable
 
-import aiosqlite
 import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from testcontainers.postgres import PostgresContainer
 
 from api.dependencies import create_access_token
 from core.config import get_settings
 from core.state import AgentState, LeadContext
 
+# Immagine Postgres standard — il checkpointer non richiede pgvector.
+_POSTGRES_IMAGE = "postgres:16"
+
+
+# ── Settings isolation ────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
 def _reset_settings_cache(monkeypatch, tmp_path):
     """
     Isola le Settings per ogni test:
     - cache di get_settings() pulita prima e dopo il test;
-    - DB SQLite su file temporaneo (mai il path di produzione);
     - provider LLM forzato a 'openai' (rotta httpx → mockabile con respx).
+    - upload e profili su tmp: i test API non scrivono nel repo.
     """
-    monkeypatch.setenv("SQLITE_DB_PATH", str(tmp_path / "checkpoints.db"))
     monkeypatch.setenv("LLM_PROVIDER", "openai")
-    # Isola anche upload e profili su tmp: i test API non devono scrivere nel repo.
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.setenv("PROFILES_DIR", str(tmp_path / "profiles"))
     get_settings.cache_clear()
@@ -46,16 +71,58 @@ def _reset_settings_cache(monkeypatch, tmp_path):
     get_settings.cache_clear()
 
 
-@pytest.fixture
-async def checkpointer():
-    """AsyncSqliteSaver in-memory: supporta interrupt/resume, zero I/O su disco."""
-    conn = await aiosqlite.connect(":memory:")
-    saver = AsyncSqliteSaver(conn)
-    await saver.setup()  # crea le tabelle SQLite richieste da LangGraph >= 0.2
-    try:
+# ── Container session-scoped ──────────────────────────────────────────────────
+
+@pytest.fixture(scope="session")
+def pg_checkpointer_container() -> Generator[PostgresContainer, None, None]:
+    """
+    Avvia un container Postgres una volta per l'intera sessione di test.
+
+    Teardown automatico via context manager di testcontainers.
+    Non serve pgvector: le tabelle LangGraph (checkpoints, checkpoint_blobs,
+    checkpoint_writes, checkpoint_migrations) usano solo tipi Postgres standard.
+    """
+    with PostgresContainer(
+        image=_POSTGRES_IMAGE,
+        dbname="test_checkpoints",
+        username="test",
+        password="test",
+    ) as container:
+        yield container
+
+
+# ── Checkpointer function-scoped ──────────────────────────────────────────────
+
+@pytest_asyncio.fixture
+async def checkpointer(
+    pg_checkpointer_container: PostgresContainer,
+) -> AsyncGenerator[AsyncPostgresSaver, None]:
+    """
+    AsyncPostgresSaver collegato al container Postgres di sessione.
+
+    Per ogni test:
+    - Entra nel context manager di AsyncPostgresSaver (gestisce il pool psycopg3).
+    - Chiama setup() per creare/verificare le tabelle LangGraph.
+    - Nel teardown tronca le tabelle checkpoint per isolare i test.
+
+    Il container rimane in vita per tutta la sessione (scope=session);
+    solo il saver e il suo pool psycopg3 vengono ricreati per ogni test.
+    """
+    # testcontainers restituisce un URL psycopg2; convertiamo in formato
+    # psycopg3 richiesto da AsyncPostgresSaver.
+    psycopg2_url: str = pg_checkpointer_container.get_connection_url()
+    conn_string: str = psycopg2_url.replace("postgresql+psycopg2://", "postgresql://")
+
+    async with AsyncPostgresSaver.from_conn_string(conn_string) as saver:
+        await saver.setup()
         yield saver
-    finally:
-        await conn.close()
+        # Teardown: tronca le tabelle LangGraph per isolare i test successivi.
+        # UniqueViolation su checkpoint_migrations è già gestita da setup(),
+        # quindi il truncate riguarda solo i dati di checkpoint effettivi.
+        async with await saver.conn.cursor() as cur:
+            await cur.execute(
+                "TRUNCATE TABLE checkpoint_blobs, checkpoint_writes, checkpoints RESTART IDENTITY CASCADE"
+            )
 
 
 @pytest.fixture
