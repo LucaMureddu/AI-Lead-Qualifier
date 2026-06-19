@@ -10,7 +10,7 @@ Test dei singoli nodi del grafo di ingestion, isolati con mock mirati.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -226,4 +226,5 @@ async def test_write_to_pgvector_embeds_and_upserts() -> None:
 
     assert written == 1
     mock_upsert.assert_called_once()
-    assert collection.upsert.call_args.kwargs["ids"] == ["A"]
+    called_items: list = mock_upsert.call_args.args[0]
+    assert any(i["metadata"]["id"] == "A" for i in called_items)

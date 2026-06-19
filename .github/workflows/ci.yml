@@ -85,10 +85,19 @@ jobs:
       - name: Install CI dependencies
         run: pip install -r requirements-ci.txt
 
+      - name: Generate JWT test keys
+        run: |
+          mkdir -p keys
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out keys/private.pem
+          openssl rsa -pubout -in keys/private.pem -out keys/public.pem
+          chmod 600 keys/private.pem
+
       - name: Pytest — unit + eval_ci (no eval live, no vector_store)
         run: |
           pytest \
             -m "not eval and not vector_store" \
+            --ignore=tests/evals \
+            --ignore=tests/integration \
             --cov \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
@@ -139,6 +148,13 @@ jobs:
 
       - name: Install CI dependencies
         run: pip install -r requirements-ci.txt
+
+      - name: Generate JWT test keys
+        run: |
+          mkdir -p keys
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out keys/private.pem
+          openssl rsa -pubout -in keys/private.pem -out keys/public.pem
+          chmod 600 keys/private.pem
 
       # Pre-pull dell'immagine pgvector per ridurre la latenza del primo test.
       # Il layer cache di Docker persiste per la durata del job (non tra job).

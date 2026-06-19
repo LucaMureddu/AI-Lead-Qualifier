@@ -12,7 +12,7 @@ e resume con ``Command(resume={...})`` sia approvato che rifiutato.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from langgraph.types import Command
