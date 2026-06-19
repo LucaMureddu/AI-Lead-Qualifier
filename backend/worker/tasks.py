@@ -33,6 +33,7 @@ import structlog
 
 from core.state import AgentState, LeadContext
 from core.graph import build_graph, get_checkpointer
+from services.embeddings import EmbeddingError, aembed_documents
 
 try:
     from database.db_core import get_pool
@@ -195,7 +196,6 @@ async def update_embedding_task(
     the job according to WorkerSettings (default: no retry, error surfaced in Redis).
     """
     from ingestion.graph import _row_to_text
-    from services.embeddings import EmbeddingError, aembed_documents
 
     log.info("embedding_update.start", item_id=item_id, tenant_id=tenant_id)
 
