@@ -7,6 +7,7 @@
 [tool.pytest.ini_options]
 asyncio_mode = "auto"           # i test async non richiedono @pytest.mark.asyncio
 asyncio_default_fixture_loop_scope = "function"   # pytest-asyncio >= 0.23: loop scope esplicito
+pythonpath = ["."]
 testpaths = ["tests"]
 # Gli eval LIVE (modello reale) sono esclusi di default con -m "not eval".
 # --strict-markers fa fallire l'uso di marker non registrati qui sotto.
