@@ -6,10 +6,12 @@
 // Tutti i backend call sono mockati via page.route() — nessun server reale.
 //
 // NOTE sui locator:
-//   - I nomi dei servizi sono in <input x-model="edit.service">, NON in nodi
-//     di testo. Usare getByDisplayValue() per trovarli, non getByText().
+//   - I nomi dei servizi sono in <input x-model="edit.service">: usare
+//     toHaveValue() o row.locator("input[type=text]") – non getByText().
 //   - Le righe hanno data-testid="catalog-row-<id>" per selezioni stabili.
-//   - I bottoni di paginazione mostrano "← Prec" e "Succ →".
+//   - Le opzioni del select usano "Su richiesta" / "Gratis" come label:
+//     usare locator("span", { hasText }) per i badge, non getByText scoped.
+//   - I bottoni di paginazione mostrano "← Prec" / "Succ →".
 
 import { test, expect } from "@playwright/test";
 import { seedAuth } from "./helpers.js";
@@ -71,6 +73,10 @@ async function setup(page, catalogResponse = CATALOG_RESPONSE) {
   await catalogLoaded;
 }
 
+// ── Helper: riga per ID item ──────────────────────────────────────────────────
+
+const itemRow = (page, id) => page.getByTestId(`catalog-row-${id}`);
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Caricamento e rendering tabella
 // ═════════════════════════════════════════════════════════════════════════════
@@ -79,10 +85,10 @@ test.describe("Catalogo Servizi — caricamento", () => {
   test("mostra tutti e tre i servizi nella tabella", async ({ page }) => {
     await setup(page);
 
-    // I nomi servizio sono valori di <input>, non testo — usare getByDisplayValue
-    await expect(page.getByDisplayValue("Sviluppo Sito Web")).toBeVisible();
-    await expect(page.getByDisplayValue("Onboarding Base")).toBeVisible();
-    await expect(page.getByDisplayValue("Consulenza Cloud")).toBeVisible();
+    // I nomi servizio sono valori di <input>, non testo — usare toHaveValue()
+    await expect(itemRow(page, ITEM_FIXED.id).locator("input[type=text]").first()).toHaveValue("Sviluppo Sito Web");
+    await expect(itemRow(page, ITEM_FREE.id).locator("input[type=text]").first()).toHaveValue("Onboarding Base");
+    await expect(itemRow(page, ITEM_VARIABLE.id).locator("input[type=text]").first()).toHaveValue("Consulenza Cloud");
   });
 
   test("empty state quando il catalogo è vuoto", async ({ page }) => {
@@ -115,7 +121,10 @@ test.describe("Catalogo Servizi — caricamento", () => {
     await firstLoad;
 
     const initialCount = callCount;
-    await page.getByRole("button", { name: /Ricarica/ }).click();
+    // Aspetta che il bottone mostri "Ricarica" (non "Caricamento…") prima di cliccare
+    const reloadBtn = page.getByRole("button", { name: /Ricarica/ });
+    await expect(reloadBtn).toBeVisible();
+    await reloadBtn.click();
     await page.waitForResponse("**/api/catalog/items**");
     expect(callCount).toBeGreaterThan(initialCount);
   });
@@ -128,8 +137,7 @@ test.describe("Catalogo Servizi — caricamento", () => {
 test.describe("Badge price_type V3", () => {
   test("FIXED mostra un input prezzo numerico", async ({ page }) => {
     await setup(page);
-    // La riga FIXED ha data-testid stabile — usarlo al posto di getByText()
-    const fixedRow = page.getByTestId(`catalog-row-${ITEM_FIXED.id}`);
+    const fixedRow = itemRow(page, ITEM_FIXED.id);
     await expect(fixedRow.locator("select")).toHaveValue("FIXED");
   });
 
@@ -170,8 +178,8 @@ test.describe("Edit inline — PATCH", () => {
     await page.getByTestId("nav-catalog").click();
     await catalogLoaded;
 
-    // Trova la riga tramite data-testid stabile (non dipende dal valore dell'input)
-    const fixedRow = page.getByTestId(`catalog-row-${ITEM_FIXED.id}`);
+    // Usa il data-testid stabile della riga (non dipende dal valore dell'input)
+    const fixedRow = itemRow(page, ITEM_FIXED.id);
     const serviceInput = fixedRow.locator("input[type=text]").first();
     await serviceInput.waitFor({ state: "visible" });
     await serviceInput.fill("Sito Web Professionale");
@@ -185,8 +193,8 @@ test.describe("Edit inline — PATCH", () => {
     await fixedRow.getByTitle("Salva modifiche").click();
     await patchDone;
 
-    // Dopo il 200, l'input mostra il nome aggiornato
-    await expect(page.getByDisplayValue("Sito Web Professionale")).toBeVisible();
+    // Dopo il 200, l'input della riga mostra il nome aggiornato
+    await expect(fixedRow.locator("input[type=text]").first()).toHaveValue("Sito Web Professionale");
   });
 
   test("cambio da FIXED a VARIABLE nasconde input prezzo e mostra badge", async ({
@@ -194,11 +202,11 @@ test.describe("Edit inline — PATCH", () => {
   }) => {
     await setup(page);
 
-    const fixedRow = page.getByTestId(`catalog-row-${ITEM_FIXED.id}`);
+    const fixedRow = itemRow(page, ITEM_FIXED.id);
     await fixedRow.locator("select").first().selectOption("VARIABLE");
 
-    // Il badge 'Su richiesta' deve diventare visibile in quella riga
-    await expect(fixedRow.getByText("Su richiesta")).toBeVisible();
+    // Il badge 'Su richiesta' è uno <span> — scope a span per non matchare <option>
+    await expect(fixedRow.locator("span", { hasText: "Su richiesta" }).first()).toBeVisible();
   });
 
   test("cambio da FIXED a FREE mostra badge Gratis (price read-only)", async ({
@@ -206,10 +214,11 @@ test.describe("Edit inline — PATCH", () => {
   }) => {
     await setup(page);
 
-    const fixedRow = page.getByTestId(`catalog-row-${ITEM_FIXED.id}`);
+    const fixedRow = itemRow(page, ITEM_FIXED.id);
     await fixedRow.locator("select").first().selectOption("FREE");
 
-    await expect(fixedRow.getByText("Gratis")).toBeVisible();
+    // Badge 'Gratis' è uno <span> — scope a span per non matchare <option>
+    await expect(fixedRow.locator("span", { hasText: "Gratis" }).first()).toBeVisible();
   });
 
   test("bottone Salva è disabilitato finché la riga non è stata modificata", async ({
@@ -217,7 +226,7 @@ test.describe("Edit inline — PATCH", () => {
   }) => {
     await setup(page);
 
-    const fixedRow = page.getByTestId(`catalog-row-${ITEM_FIXED.id}`);
+    const fixedRow = itemRow(page, ITEM_FIXED.id);
     await expect(fixedRow.getByTitle("Salva modifiche")).toBeDisabled();
   });
 
@@ -241,19 +250,19 @@ test.describe("Edit inline — PATCH", () => {
     await page.getByTestId("nav-catalog").click();
     await catalogLoaded;
 
-    // Modifica il nome tramite riga stabile
-    const fixedRow = page.getByTestId(`catalog-row-${ITEM_FIXED.id}`);
+    // Usa il data-testid stabile: il riferimento alla riga non cambia dopo fill()
+    const fixedRow = itemRow(page, ITEM_FIXED.id);
     const serviceInput = fixedRow.locator("input[type=text]").first();
     await serviceInput.waitFor({ state: "visible" });
     await serviceInput.fill("Valore temporaneo");
 
-    // Clicca Annulla — la riga è trovata tramite testid, non dal testo dell'input
+    // Clicca Annulla — riga trovata tramite testid, non dal testo dell'input
     const discardBtn = fixedRow.getByTitle("Annulla modifiche");
     await expect(discardBtn).toBeEnabled();
     await discardBtn.click();
 
-    // Il valore originale torna nell'input
-    await expect(page.getByDisplayValue("Sviluppo Sito Web")).toBeVisible();
+    // Il valore originale deve tornare nell'input della riga
+    await expect(fixedRow.locator("input[type=text]").first()).toHaveValue("Sviluppo Sito Web");
     expect(patchCalled).toBe(false);
   });
 });
@@ -280,7 +289,7 @@ test.describe("Validazione client-side", () => {
     await page.getByTestId("nav-catalog").click();
     await catalogLoaded;
 
-    const fixedRow = page.getByTestId(`catalog-row-${ITEM_FIXED.id}`);
+    const fixedRow = itemRow(page, ITEM_FIXED.id);
     const priceInput = fixedRow.locator("input[type=number]").first();
     await priceInput.waitFor({ state: "visible" });
     await priceInput.fill("-100");
@@ -321,7 +330,7 @@ test.describe("Gestione errori backend", () => {
     await page.getByTestId("nav-catalog").click();
     await catalogLoaded;
 
-    const fixedRow = page.getByTestId(`catalog-row-${ITEM_FIXED.id}`);
+    const fixedRow = itemRow(page, ITEM_FIXED.id);
     const serviceInput = fixedRow.locator("input[type=text]").first();
     await serviceInput.waitFor({ state: "visible" });
     await serviceInput.fill("Nome che genera 422");
@@ -335,8 +344,8 @@ test.describe("Gestione errori backend", () => {
 
     // Toast di errore con riferimento al vincolo DB
     await expect(page.getByText(/Vincolo DB violato/i)).toBeVisible();
-    // La riga torna al valore originale (rollback) — il nome è nell'input
-    await expect(page.getByDisplayValue("Sviluppo Sito Web")).toBeVisible();
+    // La riga torna al valore originale (rollback)
+    await expect(fixedRow.locator("input[type=text]").first()).toHaveValue("Sviluppo Sito Web");
   });
 });
 
@@ -395,16 +404,16 @@ test.describe("Paginazione", () => {
     await page.getByTestId("nav-catalog").click();
     await firstPage;
 
-    // Prima pagina: Servizio 1 è un valore di input, non testo
-    await expect(page.getByDisplayValue("Servizio 1")).toBeVisible();
+    // Prima pagina: "Servizio 1" è in un input (id="id-0") — usare toHaveValue
+    await expect(page.getByTestId("catalog-row-id-0").locator("input[type=text]").first()).toHaveValue("Servizio 1");
 
     // Clicca pagina successiva — il bottone mostra "Succ →"
     const nextPageLoaded = page.waitForResponse("**/api/catalog/items**");
     await page.getByRole("button", { name: /Succ/ }).click();
     await nextPageLoaded;
 
-    // Seconda pagina: Servizio 21 visibile
-    await expect(page.getByDisplayValue("Servizio 21")).toBeVisible();
+    // Seconda pagina: "Servizio 21" è in un input (id="id-20")
+    await expect(page.getByTestId("catalog-row-id-20").locator("input[type=text]").first()).toHaveValue("Servizio 21");
     // Footer mostra 21–25 di 25
     await expect(page.getByText(/21/).first()).toBeVisible();
   });
