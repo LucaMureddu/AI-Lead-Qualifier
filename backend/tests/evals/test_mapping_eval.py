@@ -2,13 +2,15 @@
 tests/evals/test_mapping_eval.py
 --------------------------------
 BINARIO B — eval LIVE per il Mapper (marker ``eval``, escluso da ``-m "not eval"``).
-Semina un mini-catalogo in ChromaDB e verifica il retrieval reale:
+Semina un mini-catalogo in pgvector e verifica il retrieval reale:
 
-    pytest -m eval        # richiede ChromaDB attivo
+    pytest -m eval        # richiede pgvector + Ollama attivi
 
 Copre i match positivi (categoria giusta + distanza sotto soglia stretta) e un
-caso OFF-TARGET (query fuori catalogo → distanza alta). Se ChromaDB non è
-raggiungibile, i test del mapper si SALTANO.
+caso OFF-TARGET (query fuori catalogo → distanza alta). Se pgvector/Ollama non
+sono raggiungibili, i test del mapper si SALTANO.
+
+V2: migrato da ChromaDB a pgvector — coerente con la migrazione del mapper.
 """
 
 from __future__ import annotations
@@ -18,7 +20,6 @@ import pathlib
 
 import pytest
 
-from core.config import get_settings
 from tests.evals._mapper import run_mapper, seed_catalog
 
 pytestmark = pytest.mark.eval
@@ -31,14 +32,13 @@ _GOLDEN = [
 ]
 
 
-@pytest.fixture(scope="module")
-def seeded_catalog():
-    """Semina la collezione di eval una volta. Skip se ChromaDB è giù."""
-    s = get_settings()
+@pytest.fixture()
+async def seeded_catalog():
+    """Semina il catalogo di eval in pgvector. Skip se pgvector/Ollama non raggiungibili."""
     try:
-        seed_catalog(s.chroma_host, s.chroma_port)
+        await seed_catalog()
     except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"ChromaDB non raggiungibile ({s.chroma_host}:{s.chroma_port}) — eval mapper saltati: {exc}")
+        pytest.skip(f"pgvector/Ollama non raggiungibile — eval mapper saltati: {exc}")
     return True
 
 

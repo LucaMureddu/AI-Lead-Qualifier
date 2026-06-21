@@ -1,14 +1,14 @@
 """
 tests/evals/_mapper.py
 ----------------------
-Helper per gli eval del Mapper (RAG su ChromaDB), §4.1.2.
+Helper per gli eval del Mapper (RAG su pgvector), §4.1.2.
 
-Semina un mini-catalogo deterministico e distintivo in una collezione Chroma
-dedicata, poi esegue ``mapper_node`` su query parafrasate. Usato dal Binario B
-(live) e da capture_snapshots. Richiede un server ChromaDB attivo.
+Semina un mini-catalogo deterministico e distintivo in pgvector via
+``database.vector_store.upsert_items``, poi esegue ``mapper_node`` su query
+parafrasate. Usato dal Binario B (live) e da capture_snapshots.
+Richiede Postgres+pgvector attivo e Ollama (per gli embedding).
 
-L'embedder è quello di ChromaDB (all-MiniLM-L6-v2): piccolo, CPU-only,
-deterministico — coerente con §4.3.2.
+V2: migrato da ChromaDB a pgvector — coerente con la migrazione del mapper.
 """
 
 from __future__ import annotations
@@ -17,52 +17,53 @@ from typing import Any, Dict, List
 
 from agents.mapper import mapper_node
 from core.state import LeadContext
+from database.vector_store import upsert_items, wipe_tenant
+from services.embeddings import get_embeddings_service
 
-# Tenant/collezione dedicati agli eval (catalogue_eval_mapper).
+# Tenant dedicato agli eval del mapper.
 SEED_TENANT = "eval_mapper"
 
 # Catalogo minimo e ben separato semanticamente.
 SEED_ITEMS: List[Dict[str, Any]] = [
     {
-        "id": "svc-web",
         "name": "Sviluppo Sito Web Aziendale",
-        "doc": "Sviluppo Sito Web Aziendale — creazione di siti web e landing page",
+        "description": "Sviluppo Sito Web Aziendale — creazione di siti web e landing page",
         "price": 2000.0,
-        "unit": "€",
+        "price_type": "fixed",
     },
     {
-        "id": "svc-seo",
         "name": "Consulenza SEO e Posizionamento",
-        "doc": "Consulenza SEO e Posizionamento — ottimizzazione per i motori di ricerca Google",
+        "description": "Consulenza SEO e Posizionamento — ottimizzazione per i motori di ricerca Google",
         "price": 800.0,
-        "unit": "€",
+        "price_type": "fixed",
     },
     {
-        "id": "svc-cloud",
         "name": "Migrazione Cloud",
-        "doc": "Migrazione Cloud — spostamento di server e infrastruttura sul cloud",
+        "description": "Migrazione Cloud — spostamento di server e infrastruttura sul cloud",
         "price": 3000.0,
-        "unit": "€",
+        "price_type": "fixed",
     },
 ]
 
 
-def seed_catalog(host: str, port: int, tenant: str = SEED_TENANT, items: List[Dict[str, Any]] = SEED_ITEMS) -> None:
-    """(Ri)semina la collezione ``catalogue_{tenant}`` in Chroma. Richiede Chroma attivo."""
-    import chromadb  # noqa: PLC0415
-
-    client = chromadb.HttpClient(host=host, port=port)
-    name = f"catalogue_{tenant}"
-    try:
-        client.delete_collection(name)  # slate pulito a ogni run
-    except Exception:  # noqa: BLE001  (collezione assente: ok)
-        pass
-    collection = client.get_or_create_collection(name=name, metadata={"hnsw:space": "cosine"})
-    collection.upsert(
-        documents=[it["doc"] for it in items],
-        metadatas=[{"service_name": it["name"], "price": it["price"], "unit": it["unit"]} for it in items],
-        ids=[it["id"] for it in items],
-    )
+async def seed_catalog(tenant: str = SEED_TENANT, items: List[Dict[str, Any]] = SEED_ITEMS) -> None:
+    """(Ri)semina il catalogo di eval in pgvector. Richiede Postgres+pgvector e Ollama attivi."""
+    embedder = get_embeddings_service()
+    await wipe_tenant(tenant)
+    docs = [it["description"] for it in items]
+    embeddings = await embedder.aembed_documents(docs)
+    rows = [
+        {
+            "service": it["name"],
+            "price": it["price"],
+            "price_type": it["price_type"],
+            "description": it["description"],
+            "embedding": emb,
+            "metadata": {},
+        }
+        for it, emb in zip(items, embeddings)
+    ]
+    await upsert_items(rows, tenant_id=tenant)
 
 
 async def run_mapper(services: List[str], tenant: str = SEED_TENANT) -> List[Dict[str, Any]]:

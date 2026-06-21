@@ -2,7 +2,7 @@
 tests/evals/_pipeline.py
 ------------------------
 Helper condiviso (Binario B + capture_snapshots) per eseguire la pipeline di
-ingestion fino alla validazione, SENZA scrivere su ChromaDB:
+ingestion fino alla validazione, SENZA scrivere su pgvector:
 
     chunker (legge il CSV) → normalizer (LLM, loop sui chunk) → validator
 
@@ -10,6 +10,10 @@ Si ferma prima del finalizer/approval: ci interessano gli item normalizzati e
 gli esiti di flagging (per gli eval di normalizzazione e di routing HITL).
 Usa il VERO LLM (normalizer) → da chiamare solo in contesti `-m eval` o dallo
 script di cattura snapshot.
+
+Nota V2.1: chunker_node si aspetta una S3 key, non un path locale. Qui
+leggiamo il CSV direttamente dal filesystem e popoliamo raw_chunks manualmente,
+bypassando il download S3 — corretto per eval in locale.
 """
 
 from __future__ import annotations
@@ -17,7 +21,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ingestion.graph import chunker_node, make_initial_state, normalizer_node, validator_node
+from ingestion.graph import _read_csv, _split_chunks, make_initial_state, normalizer_node, validator_node
+from core.config import get_settings
 
 
 def _serialize(items) -> List[Dict[str, Any]]:
@@ -33,7 +38,7 @@ async def run_normalization(
     review_feedback: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Esegue chunker → normalizer (loop) → validator su un CSV e ritorna:
+    Esegue chunker (locale) → normalizer (loop) → validator su un CSV e ritorna:
         { items: [{name, price, currency, flagged}], flagged_count,
           confidence_score, validation_errors, error }
     """
@@ -46,7 +51,28 @@ async def run_normalization(
         )
     )
 
-    state.update(await chunker_node(state))
+    # Leggi il CSV direttamente dal filesystem (bypassa S3 — solo per eval locali).
+    try:
+        content: bytes = Path(csv_path).read_bytes()
+        rows = _read_csv(content)
+        chunk_size = get_settings().ingestion_chunk_size
+        chunks = _split_chunks(rows, chunk_size)
+        state.update({
+            "raw_chunks": chunks,
+            "current_chunk_index": 0,
+            "normalized_items": [],
+            "validation_errors": [],
+            "flagged_items": [],
+            "confidence_score": 0.0,
+            "approved": None,
+            "error": None,
+            "sse_logs": [],
+        })
+    except Exception as exc:  # noqa: BLE001
+        error_msg = f"[eval/_pipeline] Lettura CSV fallita per '{csv_path}': {exc}"
+        return {"items": [], "flagged_count": 0, "confidence_score": 0.0,
+                "validation_errors": [], "error": error_msg}
+
     if state.get("error"):
         return {"items": [], "flagged_count": 0, "confidence_score": 0.0,
                 "validation_errors": [], "error": state["error"]}

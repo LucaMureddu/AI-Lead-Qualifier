@@ -53,6 +53,33 @@ from core.state import AgentState, LeadContext
 _POSTGRES_IMAGE = "postgres:16"
 
 
+# ── Rate limiter isolation ────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _disable_rate_limit(monkeypatch):
+    """
+    Disabilita il rate limiter per ogni test.
+
+    Il singleton ``limiter`` usa storage in-memory che persiste tra i test:
+    se una classe esegue più request sullo stesso endpoint, i test successivi
+    trovano il bucket esaurito e ricevono 429. Testiamo la business logic,
+    non slowapi — quindi sostituiamo _check_request_limit con un no-op.
+
+    Non si usa patch.object(limiter, "limiter") perché ``limiter`` è una
+    @property sulla classe slowapi Limiter (no deleter → AttributeError).
+    """
+    from core.rate_limit import limiter
+
+    def _noop(request, *args, **kwargs):
+        # slowapi middleware legge request.state.view_rate_limit dopo ogni
+        # risposta per iniettare gli header X-RateLimit-*. Se _check_request_limit
+        # è un puro no-op, l'attributo non viene mai settato e il middleware
+        # crasha. Settarlo a None fa sì che _inject_headers salti l'iniezione.
+        request.state.view_rate_limit = None
+
+    monkeypatch.setattr(limiter, "_check_request_limit", _noop)
+
+
 # ── Settings isolation ────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
@@ -119,7 +146,7 @@ async def checkpointer(
         # Teardown: tronca le tabelle LangGraph per isolare i test successivi.
         # UniqueViolation su checkpoint_migrations è già gestita da setup(),
         # quindi il truncate riguarda solo i dati di checkpoint effettivi.
-        async with await saver.conn.cursor() as cur:
+        async with saver.conn.cursor() as cur:
             await cur.execute(
                 "TRUNCATE TABLE checkpoint_blobs, checkpoint_writes, checkpoints RESTART IDENTITY CASCADE"
             )
@@ -167,7 +194,49 @@ def auth_headers() -> dict[str, str]:
 
 
 @pytest.fixture
-async def api_client(auth_headers):
+def fastapi_app():
+    """
+    FastAPI app con app.state mockato — nessun servizio esterno richiesto.
+
+    I route handler leggono graph/redis/ingestion_graph da app.state tramite
+    le funzioni get_graph/get_redis/get_ingestion_graph (Depends). Poiché
+    Depends cattura il riferimento alla funzione originale, patch() sul modulo
+    non funziona: bisogna popolare app.state prima della request.
+
+    I test che hanno bisogno di comportamento specifico sovrascrivono
+    direttamente gli attributi del mock:
+
+        fastapi_app.state.graph.aget_state = AsyncMock(return_value=my_snapshot)
+        fastapi_app.state.redis = my_redis_mock
+    """
+    from unittest.mock import AsyncMock
+    from main import create_app
+
+    app = create_app()
+
+    # ── Qualification graph ───────────────────────────────────────────────────
+    mock_graph = AsyncMock()
+    mock_graph.aget_state = AsyncMock(return_value=None)
+    mock_graph.aupdate_state = AsyncMock(return_value=None)
+    app.state.graph = mock_graph
+
+    # ── Ingestion graph ───────────────────────────────────────────────────────
+    mock_ingestion_graph = AsyncMock()
+    mock_ingestion_graph.aget_state = AsyncMock(return_value=None)
+    mock_ingestion_graph.ainvoke = AsyncMock(return_value={})
+    app.state.ingestion_graph = mock_ingestion_graph
+
+    # ── ARQ Redis pool ────────────────────────────────────────────────────────
+    mock_redis = AsyncMock()
+    mock_redis.enqueue_job = AsyncMock(return_value=None)
+    mock_redis.ping = AsyncMock(return_value=True)
+    app.state.redis = mock_redis
+
+    return app
+
+
+@pytest.fixture
+async def api_client(fastapi_app, auth_headers):
     """
     Client async che parla con l'app FastAPI senza avviare un server reale.
 
@@ -175,9 +244,7 @@ async def api_client(auth_headers):
     l'header ``Authorization: Bearer <token>`` pre-configurato per il tenant 'acme'.
     Gli endpoint che non richiedono auth (``/health``, ``/token``) ignorano l'header.
     """
-    from main import create_app
-
-    transport = ASGITransport(app=create_app())
+    transport = ASGITransport(app=fastapi_app)
     async with AsyncClient(
         transport=transport,
         base_url="http://test",

@@ -38,12 +38,14 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import aioboto3
 import structlog
 from botocore.exceptions import BotoCoreError, ClientError
-from types_aiobotocore_s3.client import S3Client
+
+if TYPE_CHECKING:
+    from types_aiobotocore_s3.client import S3Client
 
 from core.config import get_settings
 

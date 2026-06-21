@@ -2,7 +2,9 @@
 tests/integration/test_nodes_ingestion.py
 ------------------------------------------
 Test dei singoli nodi del grafo di ingestion, isolati con mock mirati.
-- chunker   → legge file reali da tmp_path (CSV/JSON), nessuna rete.
+- chunker   → V2.1 scarica da S3 via services.storage.download_file().
+              I test mockano download_file per restituire bytes locali
+              senza connettersi a MinIO.
 - normalizer→ ``agents.extractor._call_openai_compatible`` (import locale nel nodo).
 - validator → puro, nessun mock.
 - finalizer → ``ingestion.graph._write_to_pgvector`` (coroutine asincrona).
@@ -52,7 +54,8 @@ class TestChunkerNode:
     async def test_reads_csv(self, tmp_path) -> None:
         f = tmp_path / "c.csv"
         f.write_text("name,price\nA,10\nB,20\n", encoding="utf-8")
-        out = await chunker_node(_ing_state(source_file=str(f), file_format="csv"))
+        with patch("services.storage.download_file", new=AsyncMock(return_value=f.read_bytes())):
+            out = await chunker_node(_ing_state(source_file="acme/c.csv", file_format="csv"))
         assert out["error"] is None
         assert len(out["raw_chunks"]) == 1
         assert len(out["raw_chunks"][0]) == 2  # due righe dati
@@ -61,16 +64,19 @@ class TestChunkerNode:
     async def test_reads_json(self, tmp_path) -> None:
         f = tmp_path / "c.json"
         f.write_text('[{"name": "A", "price": 10}]', encoding="utf-8")
-        out = await chunker_node(_ing_state(source_file=str(f), file_format="json"))
+        with patch("services.storage.download_file", new=AsyncMock(return_value=f.read_bytes())):
+            out = await chunker_node(_ing_state(source_file="acme/c.json", file_format="json"))
         assert out["error"] is None
         assert len(out["raw_chunks"][0]) == 1
 
     async def test_file_not_found(self) -> None:
-        out = await chunker_node(_ing_state(source_file="/nope/missing.csv", file_format="csv"))
+        # S3 non disponibile → download_file solleva eccezione → error impostato
+        out = await chunker_node(_ing_state(source_file="acme/missing.csv", file_format="csv"))
         assert out["error"] is not None
         assert out["raw_chunks"] == []
 
     async def test_unsupported_format(self, tmp_path) -> None:
+        # Il controllo del formato avviene prima del download → nessun mock necessario
         f = tmp_path / "c.txt"
         f.write_text("qualcosa", encoding="utf-8")
         out = await chunker_node(_ing_state(source_file=str(f), file_format="txt"))
@@ -181,7 +187,8 @@ class TestFinalizerNode:
 async def test_chunker_reads_json_dict_wrapper(tmp_path) -> None:
     f = tmp_path / "w.json"
     f.write_text('{"items": [{"name": "A", "price": 1}]}', encoding="utf-8")
-    out = await chunker_node(_ing_state(source_file=str(f), file_format="json"))
+    with patch("services.storage.download_file", new=AsyncMock(return_value=f.read_bytes())):
+        out = await chunker_node(_ing_state(source_file="acme/w.json", file_format="json"))
     assert out["error"] is None
     assert len(out["raw_chunks"][0]) == 1
 
@@ -189,7 +196,8 @@ async def test_chunker_reads_json_dict_wrapper(tmp_path) -> None:
 async def test_chunker_json_invalid_object_errors(tmp_path) -> None:
     f = tmp_path / "bad.json"
     f.write_text('{"unknown_key": 1}', encoding="utf-8")
-    out = await chunker_node(_ing_state(source_file=str(f), file_format="json"))
+    with patch("services.storage.download_file", new=AsyncMock(return_value=f.read_bytes())):
+        out = await chunker_node(_ing_state(source_file="acme/bad.json", file_format="json"))
     assert out["error"] is not None
 
 

@@ -220,6 +220,10 @@ async def patch_catalogue_item(
     - The item does not exist for this tenant.
     """
     updates: Dict[str, Any] = body.model_dump(exclude_none=True)
+    # model_dump(exclude_none=True) scarta price=None, ma per VARIABLE
+    # dobbiamo esplicitamente azzerare il prezzo nel DB.
+    if body.price_type == PriceType.VARIABLE:
+        updates["price"] = None
     if not updates:
         raise HTTPException(
             status_code=422,

@@ -56,12 +56,12 @@ class TestExtractorNode:
         out = await extractor_node(make_lead_state(sanitized_text="x"))
         assert out["extracted_services"] == []
 
-    async def test_http_error_sets_error_and_increments_retry(self, make_lead_state, respx_mock) -> None:
+    async def test_http_error_raises_runtime_error(self, make_lead_state, respx_mock) -> None:
+        # HTTP 5xx è un errore INFRASTRUTTURALE: extractor_node solleva RuntimeError
+        # in modo che ARQ possa fare il retry del job senza consumare retry_count.
         respx_mock.post(_llm_url()).mock(return_value=httpx.Response(500, text="boom"))
-        out = await extractor_node(make_lead_state(sanitized_text="x", retry_count=0))
-        assert out["extracted_services"] == []
-        assert out["retry_count"] == 1
-        assert out.get("error_detail") is not None
+        with pytest.raises(RuntimeError, match="LLM HTTP 500"):
+            await extractor_node(make_lead_state(sanitized_text="x", retry_count=0))
 
     async def test_empty_sanitized_text_short_circuits(self, make_lead_state) -> None:
         # Nessuna chiamata LLM attesa → niente respx.
@@ -184,13 +184,12 @@ async def test_similarity_search_called_with_embedding(make_lead_state) -> None:
     assert mock_search.call_args.kwargs["query_embedding"] == fake_embedding
 
 
-async def test_extractor_generic_exception_handled(make_lead_state) -> None:
-    # Un'eccezione non-httpx è catturata dall'except generico di extractor_node.
+async def test_extractor_generic_exception_raises_runtime_error(make_lead_state) -> None:
+    # Eccezioni non-httpx (SDK crash, provider error, ecc.) sono errori infrastrutturali:
+    # extractor_node le avvolge in RuntimeError affinché ARQ possa fare il retry del job.
     with patch("agents.extractor._call_openai_compatible", new=AsyncMock(side_effect=ValueError("weird"))):
-        out = await extractor_node(make_lead_state(sanitized_text="x", retry_count=0))
-    assert out["extracted_services"] == []
-    assert out["retry_count"] == 1
-    assert out.get("error_detail") is not None
+        with pytest.raises(RuntimeError, match="LLM call failed"):
+            await extractor_node(make_lead_state(sanitized_text="x", retry_count=0))
 
 
 # ── Mapper: sbarramento per distanza (mapper_max_distance) ─────────────────────
@@ -223,11 +222,13 @@ async def test_mapper_keeps_match_below_distance_threshold(make_lead_state, monk
     assert len(out["mapped_services"]) == 1
 
 
-async def test_mapper_threshold_disabled_keeps_far_match(make_lead_state, monkeypatch) -> None:
-    # mapper_max_distance=0.0 → disabilitato → max_distance=None passato a similarity_search.
-    monkeypatch.delenv("MAPPER_MAX_DISTANCE", raising=False)
+async def test_mapper_threshold_disabled_passes_no_db_filter(make_lead_state, monkeypatch) -> None:
+    # mapper_max_distance=0.0 → disabilitato → max_distance=None passato a similarity_search
+    # (nessun filtro lato DB). Il post-filter in-memory usa _DISTANCE_FALLBACK=0.80, quindi
+    # usiamo distance=0.75 che passa il fallback e verifichiamo che max_distance sia None.
+    monkeypatch.setenv("MAPPER_MAX_DISTANCE", "0")
     get_settings.cache_clear()
-    mock_search = AsyncMock(return_value=_pgvector_doc(0.9))
+    mock_search = AsyncMock(return_value=_pgvector_doc(0.75))  # < 0.80 fallback → tenuto
     with patch("agents.mapper.aembed_query", new=AsyncMock(return_value=_FAKE_EMBEDDING)), \
          patch("agents.mapper.similarity_search", new=mock_search):
         out = await mapper_node(make_lead_state(extracted_services=["x"]))

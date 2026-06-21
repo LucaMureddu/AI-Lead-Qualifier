@@ -17,7 +17,7 @@ install-ci:
 # test veloci (no eval live, no vector_store): unit + Binario A (eval_ci)
 # Specchio esatto del job `test-fast` in ci.yml — senza Docker.
 test-fast:
-	cd backend && pytest -m "not eval and not vector_store" --cov --cov-report=term-missing -q
+	cd backend && pytest -m "not eval and not eval_live and not vector_store" --cov --cov-report=term-missing -q
 
 # test di integrazione pgvector (richiede Docker con immagine pgvector/pgvector:pg16)
 # Specchio esatto del job `test-integration` in ci.yml.
@@ -27,11 +27,11 @@ test-integration:
 
 # alias retrocompatibile: gira test veloci (come prima del V2)
 test:
-	cd backend && pytest -m "not eval and not vector_store"
+	cd backend && pytest -m "not eval and not eval_live and not vector_store"
 
 # test con report di copertura (solo unit, no container)
 cov:
-	cd backend && pytest -m "not eval and not vector_store" --cov --cov-report=term-missing
+	cd backend && pytest -m "not eval and not eval_live and not vector_store" --cov --cov-report=term-missing
 
 # Binario B: evals LIVE col modello reale + giudice LLM (richiede Ollama)
 eval-local:

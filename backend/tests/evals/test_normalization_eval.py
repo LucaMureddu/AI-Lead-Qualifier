@@ -31,7 +31,7 @@ async def test_normalization_invariants_live(catalog: str) -> None:
     assert res["items"], f"{catalog}: nessun item normalizzato"
     for it in res["items"]:
         assert it["currency"] == "EUR", f"{catalog}: currency != EUR → {it}"
-        assert it["price"] >= 0, f"{catalog}: prezzo negativo → {it}"
+        assert it["price"] is None or it["price"] >= 0, f"{catalog}: prezzo negativo → {it}"
 
 
 async def test_dirty_catalog_extracts_real_prices_live() -> None:
