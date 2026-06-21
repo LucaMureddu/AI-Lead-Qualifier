@@ -18,14 +18,16 @@ export function formatMoneyIt(n) {
 
 /**
  * Etichetta prezzo per un servizio mappato. Tre rami:
- *   is_on_request=true  → "su richiesta"
- *   price === 0         → "Gratis"
- *   else                → "1.234,50 €" (+ suffisso unità se presente)
+ *   price_type === "VARIABLE"  → "su richiesta"
+ *   price === 0                → "Gratis"
+ *   else                       → "1.234,50 €" (+ suffisso unità se presente)
  *
  * Usata sia nell'anteprima email (testo) sia nel PDF e nella lista UI.
+ * Nota: il campo legacy is_on_request è stato rimosso nel refactor V3;
+ * il backend ora emette price_type="VARIABLE" per i prezzi su richiesta.
  */
 export function formatServicePrice(svc) {
-  if (svc && svc.is_on_request) return "su richiesta";
+  if (svc && svc.price_type === "VARIABLE") return "su richiesta";
   const price = Number(svc && svc.price);
   if (price === 0) return "Gratis";
   return formatMoneyIt(price) + unitSuffix(svc);
