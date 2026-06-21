@@ -59,10 +59,10 @@ async function setup(page, catalogResponse = CATALOG_RESPONSE) {
     r.fulfill({ json: catalogResponse })
   );
   await page.goto("/");
-  // Navigare alla sezione Catalogo Servizi
+  // Navigare alla sezione Catalogo Servizi e aspettare che i dati siano caricati
+  const catalogLoaded = page.waitForResponse("**/api/catalog/items**");
   await page.getByTestId("nav-catalog").click();
-  // Aspetta che la tabella sia visibile
-  await expect(page.locator('[data-testid="nav-catalog"]')).toBeVisible();
+  await catalogLoaded;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -103,7 +103,9 @@ test.describe("Catalogo Servizi — caricamento", () => {
       return r.fulfill({ json: CATALOG_RESPONSE });
     });
     await page.goto("/");
+    const firstLoad = page.waitForResponse("**/api/catalog/items**");
     await page.getByTestId("nav-catalog").click();
+    await firstLoad;
 
     const initialCount = callCount;
     await page.getByRole("button", { name: /Ricarica/ }).click();
@@ -159,7 +161,9 @@ test.describe("Edit inline — PATCH", () => {
     );
 
     await page.goto("/");
+    const catalogLoaded = page.waitForResponse("**/api/catalog/items**");
     await page.getByTestId("nav-catalog").click();
+    await catalogLoaded;
 
     // Modifica il campo service della prima riga
     const serviceInput = page
@@ -167,6 +171,7 @@ test.describe("Edit inline — PATCH", () => {
       .filter({ hasText: "Sviluppo Sito Web" })
       .locator("input[type=text]")
       .first();
+    await serviceInput.waitFor({ state: "visible" });
     await serviceInput.fill("Sito Web Professionale");
 
     // Clicca Salva
@@ -247,7 +252,9 @@ test.describe("Edit inline — PATCH", () => {
     });
 
     await page.goto("/");
+    const catalogLoaded = page.waitForResponse("**/api/catalog/items**");
     await page.getByTestId("nav-catalog").click();
+    await catalogLoaded;
 
     // Modifica il nome
     const serviceInput = page
@@ -255,6 +262,7 @@ test.describe("Edit inline — PATCH", () => {
       .filter({ hasText: "Sviluppo Sito Web" })
       .locator("input[type=text]")
       .first();
+    await serviceInput.waitFor({ state: "visible" });
     await serviceInput.fill("Valore temporaneo");
 
     // Clicca Annulla
@@ -288,11 +296,14 @@ test.describe("Validazione client-side", () => {
     });
 
     await page.goto("/");
+    const catalogLoaded = page.waitForResponse("**/api/catalog/items**");
     await page.getByTestId("nav-catalog").click();
+    await catalogLoaded;
 
     // Cambia il prezzo a un valore negativo
     const row = page.locator("tr").filter({ hasText: "Sviluppo Sito Web" });
     const priceInput = row.locator("input[type=number]").first();
+    await priceInput.waitFor({ state: "visible" });
     await priceInput.fill("-100");
 
     const saveBtn = row.getByTitle("Salva modifiche");
@@ -328,11 +339,14 @@ test.describe("Gestione errori backend", () => {
     );
 
     await page.goto("/");
+    const catalogLoaded = page.waitForResponse("**/api/catalog/items**");
     await page.getByTestId("nav-catalog").click();
+    await catalogLoaded;
 
     // Modifica il nome e premi Salva (il backend restituirà 422)
     const row = page.locator("tr").filter({ hasText: "Sviluppo Sito Web" });
     const serviceInput = row.locator("input[type=text]").first();
+    await serviceInput.waitFor({ state: "visible" });
     await serviceInput.fill("Nome che genera 422");
 
     await row.getByTitle("Salva modifiche").click();
@@ -394,7 +408,9 @@ test.describe("Paginazione", () => {
     });
 
     await page.goto("/");
+    const firstPage = page.waitForResponse("**/api/catalog/items**");
     await page.getByTestId("nav-catalog").click();
+    await firstPage;
 
     // Prima pagina: Servizio 1 visibile
     await expect(page.getByText("Servizio 1")).toBeVisible();
