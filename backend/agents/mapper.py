@@ -198,10 +198,10 @@ async def mapper_node(state: AgentState) -> Dict:
                 "matched_name": best.metadata["service"],
                 "price": best.metadata["price"],
                 "unit": best.metadata.get("unit", "€"),
-                # True when the catalogue entry had no price at ingestion time
-                # ("da preventivare" / null).  Lets downstream nodes distinguish
-                # a legitimately free service (price == 0.0) from an unknown one.
-                "is_on_request": bool(best.metadata.get("is_on_request", False)),
+                # price_type è la colonna tipizzata V3 che sostituisce is_on_request.
+                # VARIABLE ⟺ price IS NULL ⟺ "da preventivare".
+                # I nodi downstream controllano: entry["price_type"] == "VARIABLE".
+                "price_type": best.metadata.get("price_type", "FIXED"),
                 "distance": best_dist,
                 "query": service_query,
             }

@@ -32,24 +32,24 @@ def _format_quote_body(
     """
     Build a human-readable quote body for the delivery email.
 
-    Three-branch logic per service line:
-    - is_on_request → "• {nome} — su richiesta"
-    - price == 0.0  → "• {nome} — Gratis"
-    - else          → "• {nome} — {price:.2f} €"
+    Three-branch logic per service line (V3 — usa price_type):
+    - VARIABLE → "• {nome} — su richiesta"
+    - FREE     → "• {nome} — Gratis"
+    - FIXED    → "• {nome} — {price:.2f} €"
 
-    This correctly distinguishes a legitimately free service (price=0.0,
-    is_on_request=False) from one whose price is unknown (is_on_request=True,
-    price stored as 0.0 in the DB).
+    price_type distingue esplicitamente un servizio gratuito (FREE, price=0.0)
+    da uno il cui prezzo è sconosciuto (VARIABLE, price IS NULL in DB).
     """
     lines: list[str] = ["Riepilogo servizi:", ""]
     for svc in mapped_services:
         nome: str = svc.get("matched_name") or svc.get("service", "?")
-        price: float = float(svc.get("price", 0.0))
-        if svc.get("is_on_request", False):
+        price_type: str = svc.get("price_type", "FIXED")
+        if price_type == "VARIABLE":
             lines.append(f"• {nome} — su richiesta")
-        elif price == 0.0:
+        elif price_type == "FREE":
             lines.append(f"• {nome} — Gratis")
         else:
+            price: float = float(svc.get("price", 0.0))
             lines.append(f"• {nome} — {price:.2f} €")
 
     lines.append("")

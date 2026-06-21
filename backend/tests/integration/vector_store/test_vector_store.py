@@ -77,12 +77,14 @@ async def seeded_catalogue(pg_pool: asyncpg.Pool) -> None:  # noqa: ARG001
             {
                 "service": "Web Development",
                 "price": 1500.0,
+                "price_type": "FIXED",
                 "description": "Sviluppo web",
                 "embedding": _unit_vec(0),
             },
             {
                 "service": "Email Setup",
                 "price": 300.0,
+                "price_type": "FIXED",
                 "description": "Config email",
                 "embedding": _unit_vec(1),
             },
@@ -94,6 +96,7 @@ async def seeded_catalogue(pg_pool: asyncpg.Pool) -> None:  # noqa: ARG001
             {
                 "service": "Cloud Hosting",
                 "price": 800.0,
+                "price_type": "FIXED",
                 "description": "Hosting cloud",
                 "embedding": _unit_vec(0),  # stesso asse di tenant_a Web Development
             },
@@ -292,6 +295,7 @@ class TestUpsertItems:
                 {
                     "service": "SEO Optimization",
                     "price": 200.0,
+                    "price_type": "FIXED",
                     "description": "SEO per PMI",
                     "embedding": _unit_vec(5),
                 }
@@ -315,6 +319,7 @@ class TestUpsertItems:
         base_item: dict[str, Any] = {
             "service": "SEO Optimization",
             "price": 200.0,
+            "price_type": "FIXED",
             "description": "SEO",
             "embedding": _unit_vec(5),
         }
@@ -338,6 +343,7 @@ class TestUpsertItems:
         item: dict[str, Any] = {
             "service": "Consulting",
             "price": 500.0,
+            "price_type": "FIXED",
             "description": "IT consulting",
             "embedding": _unit_vec(10),
         }
@@ -360,6 +366,7 @@ class TestUpsertItems:
             {
                 "service": f"Servizio_{i}",
                 "price": float(i * 100),
+                "price_type": "FIXED",
                 "description": f"Descrizione {i}",
                 "embedding": _unit_vec(i),
             }
@@ -370,6 +377,153 @@ class TestUpsertItems:
 
         count: int = await pg_pool.fetchval(
             "SELECT COUNT(*) FROM catalogue_items WHERE tenant_id = $1",
+            TENANT_A,
+        )
+        assert count == 3
+
+    async def test_upsert_variable_item_stores_null_price(
+        self,
+        pg_pool: asyncpg.Pool,
+    ) -> None:
+        """Un item VARIABLE deve essere scritto con price IS NULL nel DB."""
+        await upsert_items(
+            items=[
+                {
+                    "service": "Consulenza Custom",
+                    "price": None,
+                    "price_type": "VARIABLE",
+                    "description": "Prezzo su richiesta",
+                    "embedding": _unit_vec(20),
+                }
+            ],
+            tenant_id=TENANT_A,
+        )
+        row = await pg_pool.fetchrow(
+            "SELECT price, price_type FROM catalogue_items WHERE tenant_id = $1 AND service = $2",
+            TENANT_A,
+            "Consulenza Custom",
+        )
+        assert row is not None
+        assert row["price"] is None, "VARIABLE deve avere price IS NULL"
+        assert row["price_type"] == "VARIABLE"
+
+    async def test_upsert_free_item_stores_zero_price(
+        self,
+        pg_pool: asyncpg.Pool,
+    ) -> None:
+        """Un item FREE deve essere scritto con price = 0.0 nel DB."""
+        await upsert_items(
+            items=[
+                {
+                    "service": "Onboarding Gratuito",
+                    "price": 0.0,
+                    "price_type": "FREE",
+                    "description": "Incluso nel pacchetto",
+                    "embedding": _unit_vec(21),
+                }
+            ],
+            tenant_id=TENANT_A,
+        )
+        row = await pg_pool.fetchrow(
+            "SELECT price, price_type FROM catalogue_items WHERE tenant_id = $1 AND service = $2",
+            TENANT_A,
+            "Onboarding Gratuito",
+        )
+        assert row is not None
+        assert row["price"] == 0.0
+        assert row["price_type"] == "FREE"
+
+
+@pytest.mark.vector_store
+class TestHybridPricingConstraint:
+    """
+    Verifica che il CHECK constraint chk_hybrid_pricing_logic respinga INSERT incoerenti.
+
+    Questi test validano l'invariante a livello DB (migration 004_hybrid_pricing):
+        FREE     → price = 0.0
+        FIXED    → price IS NOT NULL AND price >= 0
+        VARIABLE → price IS NULL
+    """
+
+    async def test_fixed_with_null_price_violates_constraint(
+        self,
+        pg_pool: asyncpg.Pool,
+    ) -> None:
+        """FIXED con price IS NULL deve essere respinto dal CHECK constraint."""
+        with pytest.raises(asyncpg.CheckViolationError):
+            await pg_pool.execute(
+                """
+                INSERT INTO catalogue_items
+                    (tenant_id, service, price, price_type, description, embedding, metadata)
+                VALUES ($1, $2, NULL, 'FIXED', 'desc', $3::vector, '{}'::jsonb)
+                """,
+                TENANT_A,
+                "Servizio Invalido FIXED-NULL",
+                f"[{','.join(['0.0'] * 768)}]",
+            )
+
+    async def test_variable_with_price_violates_constraint(
+        self,
+        pg_pool: asyncpg.Pool,
+    ) -> None:
+        """VARIABLE con price != NULL deve essere respinto dal CHECK constraint."""
+        with pytest.raises(asyncpg.CheckViolationError):
+            await pg_pool.execute(
+                """
+                INSERT INTO catalogue_items
+                    (tenant_id, service, price, price_type, description, embedding, metadata)
+                VALUES ($1, $2, 100.0, 'VARIABLE', 'desc', $3::vector, '{}'::jsonb)
+                """,
+                TENANT_A,
+                "Servizio Invalido VARIABLE-100",
+                f"[{','.join(['0.0'] * 768)}]",
+            )
+
+    async def test_free_with_nonzero_price_violates_constraint(
+        self,
+        pg_pool: asyncpg.Pool,
+    ) -> None:
+        """FREE con price != 0.0 deve essere respinto dal CHECK constraint."""
+        with pytest.raises(asyncpg.CheckViolationError):
+            await pg_pool.execute(
+                """
+                INSERT INTO catalogue_items
+                    (tenant_id, service, price, price_type, description, embedding, metadata)
+                VALUES ($1, $2, 50.0, 'FREE', 'desc', $3::vector, '{}'::jsonb)
+                """,
+                TENANT_A,
+                "Servizio Invalido FREE-50",
+                f"[{','.join(['0.0'] * 768)}]",
+            )
+
+    async def test_all_valid_combinations_accepted(
+        self,
+        pg_pool: asyncpg.Pool,
+    ) -> None:
+        """I tre casi validi dell'invariante devono essere tutti accettati dal DB."""
+        zero_vec = f"[{','.join(['0.0'] * 768)}]"
+
+        # FIXED + prezzo positivo
+        await pg_pool.execute(
+            "INSERT INTO catalogue_items (tenant_id, service, price, price_type, description, embedding, metadata) "
+            "VALUES ($1, $2, 100.0, 'FIXED', 'desc', $3::vector, '{}'::jsonb)",
+            TENANT_A, "Valid FIXED", zero_vec,
+        )
+        # FREE + price = 0.0
+        await pg_pool.execute(
+            "INSERT INTO catalogue_items (tenant_id, service, price, price_type, description, embedding, metadata) "
+            "VALUES ($1, $2, 0.0, 'FREE', 'desc', $3::vector, '{}'::jsonb)",
+            TENANT_A, "Valid FREE", zero_vec,
+        )
+        # VARIABLE + price IS NULL
+        await pg_pool.execute(
+            "INSERT INTO catalogue_items (tenant_id, service, price, price_type, description, embedding, metadata) "
+            "VALUES ($1, $2, NULL, 'VARIABLE', 'desc', $3::vector, '{}'::jsonb)",
+            TENANT_A, "Valid VARIABLE", zero_vec,
+        )
+
+        count: int = await pg_pool.fetchval(
+            "SELECT COUNT(*) FROM catalogue_items WHERE tenant_id = $1 AND service LIKE 'Valid %'",
             TENANT_A,
         )
         assert count == 3
@@ -392,6 +546,7 @@ class TestWipeTenant:
                 {
                     "service": "Servizio A",
                     "price": 1.0,
+                    "price_type": "FIXED",
                     "description": "desc",
                     "embedding": _unit_vec(0),
                 }
@@ -403,6 +558,7 @@ class TestWipeTenant:
                 {
                     "service": "Servizio B",
                     "price": 2.0,
+                    "price_type": "FIXED",
                     "description": "desc",
                     "embedding": _unit_vec(1),
                 }
@@ -442,6 +598,7 @@ class TestWipeTenant:
             {
                 "service": f"Svc_{i}",
                 "price": float(i),
+                "price_type": "FIXED",
                 "description": "d",
                 "embedding": _unit_vec(i),
             }

@@ -1,4 +1,4 @@
-# AI Lead Qualifier — V2 Enterprise
+# AI Lead Qualifier — V3 Pricing Ibrido Tipizzato
 
 [![CI](https://github.com/LucaMureddu/AI-Lead-Qualifier/actions/workflows/ci.yml/badge.svg)](https://github.com/LucaMureddu/AI-Lead-Qualifier/actions/workflows/ci.yml)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/downloads/release/python-3110/)
@@ -8,7 +8,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> Microservizio backend B2B multi-tenant per la qualificazione automatica dei lead e la generazione di preventivi. Architettura asincrona (ARQ/Redis), LLM on-premise (air-gapped), RAG semantico (PostgreSQL + pgvector), persistenza LangGraph via `AsyncPostgresSaver`, migrazioni schema con Alembic, e logging strutturato via structlog.
+> Microservizio backend B2B multi-tenant per la qualificazione automatica dei lead e la generazione di preventivi. Architettura asincrona (ARQ/Redis), LLM on-premise (air-gapped), RAG semantico (PostgreSQL + pgvector), **pricing ibrido tipizzato** (`FIXED` / `FREE` / `VARIABLE`) con invarianza matematica garantita a livello DB via `CHECK` constraint, persistenza LangGraph via `AsyncPostgresSaver`, migrazioni schema con Alembic, e logging strutturato via structlog.
 
 ---
 
@@ -85,9 +85,13 @@ Il DB schema è versionato con Alembic. Le migration vengono applicate automatic
 | `001_initial_schema` | Estensione `vector`, tabella `catalogue_items`, indice HNSW coseno |
 | `002_tenant_profiles` | Tabella `tenant_profiles` (JSONB) — sostituisce il filesystem JSON |
 | `003_audit_log` | Tabella `audit_log` — traccia ogni modifica ai campi di `catalogue_items` |
+| `004_hybrid_pricing` | Colonna `price_type VARCHAR(20) NOT NULL`, `price` diventa nullable, `CHECK` constraint che garantisce l'invariante `C(price_type, price)` |
 
 **RAG Enterprise su PostgreSQL (pgvector)**
 Catalogo servizi vettorializzato con isolamento multi-tenant nativo SQL (`WHERE tenant_id = $1`). Indice HNSW per nearest-neighbour in O(log n). Dimensione vettore configurabile via `PGVECTOR_EMBEDDING_DIM`.
+
+**Pricing Ibrido Tipizzato (V3)**
+La colonna `price_type` (`FIXED` / `FREE` / `VARIABLE`) è una colonna di prima classe nel DB, non un flag derivato. Un `CHECK` constraint PostgreSQL garantisce l'invariante `C(price_type, price)` a livello di motore: `VARIABLE ⟺ price IS NULL` (aggregati SQL corretti by-default, nessun sentinel `-1.0`), `FREE ⟺ price = 0.0`, `FIXED ⟺ price IS NOT NULL AND price ≥ 0`. La property `is_computable` su `ServiceItem` è la fonte canonica dell'informazione; i dict `mapped_services` nella pipeline LangGraph ne sono la proiezione serializzata.
 
 **JWT RS256 asimmetrico**
 I microservizi validano i token con la sola chiave pubblica, senza condividere il segreto di firma. In produzione: `TOKEN_ENDPOINT_ENABLED=false` disabilita l'endpoint `/token`.
@@ -243,7 +247,7 @@ Tutti gli endpoint (eccetto `/health` e `/token`) richiedono `Authorization: Bea
 | Metodo | Path | Descrizione |
 |---|---|---|
 | `GET` | `/api/catalog/items` | Lista paginata dei servizi del tenant (`?skip=0&limit=20`). |
-| `PATCH` | `/api/catalog/items/{id}` | Aggiorna nome, prezzo o descrizione di un servizio. Scrive `audit_log` e rigenera l'embedding in background via ARQ. |
+| `PATCH` | `/api/catalog/items/{id}` | Aggiorna nome, prezzo, `price_type` o descrizione di un servizio. Scrive `audit_log`, rigenera l'embedding via ARQ (solo se cambiano `service`/`description`). Un PATCH incoerente (es. `price_type=VARIABLE` con `price=150`) restituisce `422`. |
 
 ### Tenant & Admin
 
@@ -301,7 +305,9 @@ ai_lead_qualifier/
 │   ├── migrations/              # Script di migrazione DB
 │   │   └── versions/
 │   │       ├── 001_initial_schema.py   # pgvector + catalogue_items
-│   │       └── 002_tenant_profiles.py  # tenant_profiles (sostituisce filesystem JSON)
+│   │       ├── 002_tenant_profiles.py  # tenant_profiles (sostituisce filesystem JSON)
+│   │       ├── 003_audit_log.py        # audit_log (traccia modifiche campo per campo)
+│   │       └── 004_hybrid_pricing.py   # price_type + price nullable + CHECK constraint
 │   ├── api/
 │   │   ├── routes.py            # Endpoint REST e Dependency Injection
 │   │   ├── catalogue_routes.py  # Admin catalogo: GET /items, PATCH /items/{id}
@@ -385,6 +391,39 @@ Per le procedure operative (backup Postgres, restore, flush coda ARQ, riavvio wo
 ---
 
 ## Changelog
+
+### V3.0 — Pricing Ibrido Tipizzato (2026-06-21)
+
+**Motivazione:** il flag implicito `metadata.is_on_request` era inaffidabile — un valore `price=0.0` poteva significare sia "gratuito" sia "da preventivare", rendendo gli aggregati SQL potenzialmente errati. V3 promuove il tipo del prezzo a colonna di prima classe con invarianza garantita a livello di motore DB.
+
+**Schema DB (migration `004_hybrid_pricing`)**
+- `catalogue_items`: aggiunta colonna `price_type VARCHAR(20) NOT NULL DEFAULT 'FIXED'`
+- `price` diventa nullable: `VARIABLE ⟺ price IS NULL` (no sentinel `-1.0`)
+- Nuovo `CHECK` constraint `chk_hybrid_pricing_logic` che impone l'invariante `C(price_type, price)` a livello PostgreSQL — un INSERT/UPDATE incoerente è respinto dal motore prima di toccare l'applicazione
+
+**Modelli Pydantic (`ingestion/models.py`)**
+- Nuovo enum `PriceType` (`FIXED` / `FREE` / `VARIABLE`) come `str, Enum`
+- Campo `price_type: PriceType` su `ServiceItem` con inferenza automatica (validator `mode="before"`: `price is None ⇒ VARIABLE`, altrimenti `FIXED`; `FREE` solo su scelta esplicita)
+- `model_validator mode="after"` di coercizione: `FREE → price=0.0`, `VARIABLE → price=None`, `FIXED + price=None → ValueError` (loud failure)
+- Property `is_computable → bool`: fonte canonica della computabilità; i dict della pipeline ne sono la proiezione serializzata
+
+**Pipeline LangGraph**
+- `ingestion/graph.py`: `price_type: item.price_type.value` sostituisce `is_on_request: item.price is None`; `price` passa come `None` per VARIABLE (non coerco a `0.0`)
+- `agents/mapper.py`: `"price_type": best.metadata.get("price_type", "FIXED")` nei dict `mapped_services`
+- `agents/calculator.py`: guardia `price_type == "VARIABLE"` prima di `float(entry["price"])` — impossibile `TypeError` su `None`
+- `agents/delivery.py`: branch su `price_type` per il testo della email (VARIABLE → "su richiesta", FREE → "Gratis", FIXED → "{price:.2f} €")
+
+**API Admin (`catalogue_routes.py`)**
+- `price_type` aggiunto a `_PATCHABLE_COLUMNS`, `CatalogueItemPatch`, `CatalogueItemResponse`, `CatalogueItemPatchResponse`
+- `asyncpg.CheckViolationError` intercettato → `422` con messaggio esplicativo
+- Re-embedding asincrono accodato solo se cambiano `service` o `description` (`embedding_sync: "not_needed"` per patch di solo `price_type`)
+
+**Test**
+- **Unit** `test_models.py`: 9 nuovi casi (coercizione VARIABLE/FREE/FIXED, inferenza automatica, `is_computable`)
+- **Unit** `test_calculator.py`: riscritto con `price_type`; nuovi casi `test_mathematical_invariance`, `test_variable_price_none_does_not_raise`
+- **Unit** `test_catalogue_api.py`: 3 nuovi test (schema coercizione PATCH, `CheckViolationError → 422`, skip re-embedding su price_type-only)
+- **Integration** `test_vector_store.py`: `price_type` aggiunto a tutti i fixture; 2 nuovi test (VARIABLE → NULL, FREE → 0.0 nel DB); nuova classe `TestHybridPricingConstraint` con 4 test sul CHECK constraint reale (Testcontainers)
+- **Integration** `test_graph_qualify.py`, `test_nodes_qualify.py`, `test_api_qualify.py`: `price_type: "FIXED"` aggiunto a tutti i `mapped_services` mock
 
 ### V2.2 — Catalogue Admin (2026-06-19)
 

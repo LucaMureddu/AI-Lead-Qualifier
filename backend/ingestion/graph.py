@@ -688,8 +688,12 @@ async def _write_to_pgvector(
     pgvector_items: List[Dict[str, Any]] = [
         {
             "service": item.name,
-            # price is always a float (default 0.0) — DB column is NOT NULL FLOAT.
-            "price": item.price if item.price is not None else 0.0,
+            # price=None is valid for VARIABLE items — asyncpg maps None → NULL.
+            # FIXED/FREE items carry their numeric price as-is.
+            "price": item.price,
+            # price_type è la colonna tipizzata di prima classe (V3).
+            # Sostituisce il flag is_on_request presente in V2.
+            "price_type": item.price_type.value,
             # description now contains the full row text (schema-agnostic embedding).
             "description": descriptions[idx],
             "embedding": embeddings[idx],
@@ -700,10 +704,6 @@ async def _write_to_pgvector(
                 "tenant_id": tenant_id,
                 "ingested_at": item.ingested_at.isoformat(),
                 "id": item.id,
-                # True when the original source had no price ("da preventivare" / null).
-                # Preserved here so downstream nodes can distinguish "free" (0.0 €) from
-                # "on request" (unknown price coerced to 0.0 for the NOT NULL column).
-                "is_on_request": item.price is None,
                 # Preserve raw source columns in metadata for full auditability.
                 "raw_data": item.raw_data,
             },

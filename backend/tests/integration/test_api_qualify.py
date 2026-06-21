@@ -33,8 +33,8 @@ async def test_qualify_raw_text_too_short_422(api_client) -> None:
 
 async def test_qualify_success_200(api_client) -> None:
     mapper = _mapper([
-        {"matched_name": "Cloud Migration", "price": 3000.0, "unit": "€"},
-        {"matched_name": "SEO Audit", "price": 500.0, "unit": "€"},
+        {"matched_name": "Cloud Migration", "price": 3000.0, "price_type": "FIXED", "unit": "€"},
+        {"matched_name": "SEO Audit", "price": 500.0, "price_type": "FIXED", "unit": "€"},
     ])
     with patch("agents.extractor._call_openai_compatible",
                new=AsyncMock(return_value='["Cloud Migration", "SEO Audit"]')), \
@@ -56,7 +56,7 @@ async def test_qualify_graph_error_500(api_client) -> None:
 
 
 async def test_qualify_stream_emits_log_then_done(api_client) -> None:
-    mapper = _mapper([{"matched_name": "Svc", "price": 100.0, "unit": "€"}])
+    mapper = _mapper([{"matched_name": "Svc", "price": 100.0, "price_type": "FIXED", "unit": "€"}])
     with patch("agents.extractor._call_openai_compatible", new=AsyncMock(return_value='["Svc"]')), \
          patch("core.graph.mapper_node", new=mapper):
         r = await api_client.post("/qualify/stream", json={"raw_text": _GOOD_TEXT})

@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from ingestion.models import ServiceCatalog, ServiceItem
+from ingestion.models import PriceType, ServiceCatalog, ServiceItem
 
 pytestmark = pytest.mark.unit
 
@@ -78,3 +78,51 @@ def test_service_catalog_computes_counts() -> None:
     cat = ServiceCatalog(tenant_id="acme", items=items, source_file="f.csv")
     assert cat.total_items == 2
     assert cat.flagged_count == 1  # l'item con confidence 0.3 è auto-flaggato
+
+
+# ── V3: PriceType, coercizione, is_computable ────────────────────────────────
+
+class TestPriceType:
+    """Casi di coercizione dell'invariante ibrido e property is_computable."""
+
+    def test_variable_with_explicit_price_forces_none(self) -> None:
+        """price_type=VARIABLE + price=999 → price forzato a None."""
+        item = _item(price_type=PriceType.VARIABLE, price=999.0)
+        assert item.price is None
+        assert item.price_type == PriceType.VARIABLE
+
+    def test_free_with_explicit_price_forces_zero(self) -> None:
+        """price_type=FREE + price=999 → price forzato a 0.0."""
+        item = _item(price_type=PriceType.FREE, price=999.0)
+        assert item.price == 0.0
+        assert item.price_type == PriceType.FREE
+
+    def test_fixed_with_none_price_raises(self) -> None:
+        """price_type=FIXED + price=None → ValueError (loud failure)."""
+        with pytest.raises(ValidationError):
+            _item(price_type=PriceType.FIXED, price=None)
+
+    def test_is_computable_fixed(self) -> None:
+        assert _item(price_type=PriceType.FIXED, price=100.0).is_computable is True
+
+    def test_is_computable_free(self) -> None:
+        assert _item(price_type=PriceType.FREE).is_computable is True
+
+    def test_is_computable_variable(self) -> None:
+        assert _item(price_type=PriceType.VARIABLE).is_computable is False
+
+    def test_infer_variable_when_price_is_none(self) -> None:
+        """Se price=None e price_type non specificato → inferito VARIABLE."""
+        item = ServiceItem(tenant_id="acme", name="X", price=None)
+        assert item.price_type == PriceType.VARIABLE
+        assert item.price is None
+
+    def test_infer_fixed_when_price_provided(self) -> None:
+        """Se price=50 e price_type non specificato → inferito FIXED."""
+        item = ServiceItem(tenant_id="acme", name="X", price=50.0)
+        assert item.price_type == PriceType.FIXED
+
+    def test_default_price_type_is_fixed(self) -> None:
+        """Il default esplicito resta FIXED quando price=0.0 (non None)."""
+        item = _item(price=0.0)
+        assert item.price_type == PriceType.FIXED

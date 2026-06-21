@@ -37,6 +37,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
+import asyncpg
+
 from api.catalogue_routes import (
     CatalogueItemPatch,
     CatalogueItemPatchResponse,
@@ -44,6 +46,7 @@ from api.catalogue_routes import (
     list_catalogue_items,
     patch_catalogue_item,
 )
+from ingestion.models import PriceType
 
 pytestmark = pytest.mark.unit
 
@@ -55,6 +58,7 @@ _FAKE_ITEM = {
     "id": _ITEM_ID,
     "service": "Sito web vetrina",
     "price": 800.0,
+    "price_type": "FIXED",
     "description": "Landing page responsive",
     "metadata": "{}",
 }
@@ -130,6 +134,23 @@ class TestCatalogueItemPatchSchema:
         assert m.price is None
         assert m.service is None
         assert m.description is None
+
+    # ── V3: price_type coercizione nel PATCH schema ───────────────────────────
+
+    def test_variable_price_type_forces_price_to_none(self) -> None:
+        m = CatalogueItemPatch(price_type=PriceType.VARIABLE, price=500.0)
+        assert m.price is None
+        assert m.price_type == PriceType.VARIABLE
+
+    def test_free_price_type_forces_price_to_zero(self) -> None:
+        m = CatalogueItemPatch(price_type=PriceType.FREE, price=500.0)
+        assert m.price == 0.0
+        assert m.price_type == PriceType.FREE
+
+    def test_fixed_price_type_with_valid_price(self) -> None:
+        m = CatalogueItemPatch(price_type=PriceType.FIXED, price=100.0)
+        assert m.price == 100.0
+        assert m.price_type == PriceType.FIXED
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -307,6 +328,67 @@ class TestPatchCatalogueItem:
                 )
 
         assert exc_info.value.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_check_violation_returns_422(self) -> None:
+        """
+        Un UPDATE che viola il CHECK constraint DB (es. price_type=FIXED, price=NULL)
+        deve essere intercettato come asyncpg.CheckViolationError e ritornato come 422.
+        """
+        from fastapi import HTTPException
+
+        existing = _make_row()
+        pool = _make_pool(fetchrow_return=existing)
+        conn = pool.acquire.return_value.__aenter__.return_value
+
+        # Simula il DB che rifiuta l'UPDATE con CheckViolationError
+        check_err = asyncpg.CheckViolationError()
+        check_err.constraint_name = "chk_hybrid_pricing_logic"
+        conn.fetchrow = AsyncMock(side_effect=check_err)
+
+        redis = AsyncMock()
+        req = self._make_request(redis)
+
+        with patch("api.catalogue_routes.get_pool", AsyncMock(return_value=pool)):
+            with pytest.raises(HTTPException) as exc_info:
+                await patch_catalogue_item(
+                    item_id=_ITEM_ID,
+                    body=CatalogueItemPatch(price_type=PriceType.FIXED, price=None),
+                    request=req,
+                    tenant_id=_TENANT,
+                    redis=redis,
+                )
+
+        assert exc_info.value.status_code == 422
+        assert "price_type" in exc_info.value.detail.lower() or "invariante" in exc_info.value.detail.lower()
+
+    @pytest.mark.asyncio
+    async def test_price_type_only_patch_skips_reembedding(self) -> None:
+        """
+        Un PATCH con solo price_type non deve accodare update_embedding_task
+        (l'embedding dipende da service e description, non dal prezzo).
+        """
+        existing = _make_row()
+        updated_row = _make_row(price_type="VARIABLE", price=None)
+
+        pool = _make_pool(fetchrow_return=existing)
+        conn = pool.acquire.return_value.__aenter__.return_value
+        conn.fetchrow = AsyncMock(return_value=updated_row)
+
+        redis = AsyncMock()
+        req = self._make_request(redis)
+
+        with patch("api.catalogue_routes.get_pool", AsyncMock(return_value=pool)):
+            result = await patch_catalogue_item(
+                item_id=_ITEM_ID,
+                body=CatalogueItemPatch(price_type=PriceType.VARIABLE),
+                request=req,
+                tenant_id=_TENANT,
+                redis=redis,
+            )
+
+        assert result.embedding_sync == "not_needed"
+        redis.enqueue_job.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_audit_log_written_when_value_changes(self) -> None:

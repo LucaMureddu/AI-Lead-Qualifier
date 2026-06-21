@@ -26,12 +26,12 @@ class TestQualifyGraph:
     async def test_happy_path(self, make_lead_state, checkpointer) -> None:
         mapper = AsyncMock(return_value={
             "mapped_services": [
-                {"matched_name": "Cloud Migration", "price": 3000.0, "unit": "€"},
-                {"matched_name": "SEO Audit", "price": 500.0, "unit": "€"},
+                {"matched_name": "Cloud Migration", "price": 3000.0, "price_type": "FIXED", "unit": "€"},
+                {"matched_name": "SEO Audit", "price": 500.0, "price_type": "FIXED", "unit": "€"},
             ],
             "retrieved_docs": [
-                Document(page_content="d", metadata={"service": "Cloud Migration", "price": 3000.0, "distance": 0.1}),
-                Document(page_content="d", metadata={"service": "SEO Audit", "price": 500.0, "distance": 0.1}),
+                Document(page_content="d", metadata={"service": "Cloud Migration", "price": 3000.0, "price_type": "FIXED", "distance": 0.1}),
+                Document(page_content="d", metadata={"service": "SEO Audit", "price": 500.0, "price_type": "FIXED", "distance": 0.1}),
             ],
             "error_detail": None,
         })
@@ -65,9 +65,9 @@ class TestQualifyGraph:
         adapter = MagicMock()
         adapter.deliver = deliver
         mapper = AsyncMock(return_value={
-            "mapped_services": [{"matched_name": "Svc", "price": 100.0, "unit": "€"}],
+            "mapped_services": [{"matched_name": "Svc", "price": 100.0, "price_type": "FIXED", "unit": "€"}],
             "retrieved_docs": [
-                Document(page_content="d", metadata={"service": "Svc", "price": 100.0, "distance": 0.1}),
+                Document(page_content="d", metadata={"service": "Svc", "price": 100.0, "price_type": "FIXED", "distance": 0.1}),
             ],
             "error_detail": None,
         })

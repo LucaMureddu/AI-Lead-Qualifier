@@ -89,7 +89,7 @@ class TestMapperNode:
     async def test_best_match_selected(self, make_lead_state) -> None:
         fake_docs = [Document(
             page_content="Cloud Migration doc",
-            metadata={"service": "Cloud Migration", "price": 3000.0, "unit": "€", "distance": 0.12},
+            metadata={"service": "Cloud Migration", "price": 3000.0, "price_type": "FIXED", "unit": "€", "distance": 0.12},
         )]
         with patch("agents.mapper.aembed_query", new=AsyncMock(return_value=_FAKE_EMBEDDING)), \
              patch("agents.mapper.similarity_search", new=AsyncMock(return_value=fake_docs)):
@@ -198,7 +198,7 @@ async def test_extractor_generic_exception_handled(make_lead_state) -> None:
 def _pgvector_doc(distance: float) -> list:
     return [Document(
         page_content="Doc X",
-        metadata={"service": "X", "price": 1.0, "unit": "€", "distance": distance},
+        metadata={"service": "X", "price": 1.0, "price_type": "FIXED", "unit": "€", "distance": distance},
     )]
 
 

@@ -82,13 +82,24 @@ class AgentState(TypedDict):
 
     mapped_services: List[Dict]
     """Price-list entries returned by MapperNode (pgvector lookup).
-    Each dict contains at least {'service': str, 'price': float}."""
+
+    Contratto V3 — ogni dict contiene almeno:
+      {'service': str, 'price': float | None, 'price_type': str}
+
+    price_type è la proiezione serializzata della colonna tipizzata di prima
+    classe introdotta in V3. I nodi downstream lo leggono come:
+      entry["price_type"] == "VARIABLE"  →  servizio su richiesta / da preventivare
+      entry["price_type"] == "FREE"      →  servizio gratuito (price = 0.0)
+      entry["price_type"] == "FIXED"     →  prezzo fisso noto (price IS NOT NULL)
+
+    La property ServiceItem.is_computable è la fonte canonica dell'informazione;
+    il check su price_type == 'VARIABLE' nei dict ne è la proiezione."""
 
     total_quote: float
     """Final summed quote computed by CalculatorNode (pure Python, no LLM)."""
 
     on_request_services: List[str]
-    """Service names with price=0.0 (to quote separately). Excluded from total_quote."""
+    """Service names with price_type=VARIABLE (da preventivare). Excluded from total_quote."""
 
     retry_count: int
     """Number of Extractor→Mapper retry iterations performed so far."""

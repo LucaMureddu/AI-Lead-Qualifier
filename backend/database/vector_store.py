@@ -68,7 +68,7 @@ async def similarity_search(
 
     # pgvector: <=> = cosine distance
     query = """
-        SELECT service, price, description, metadata,
+        SELECT service, price, price_type, description, metadata,
                (embedding <=> $1::vector) AS distance
         FROM   catalogue_items
         WHERE  tenant_id = $2
@@ -95,6 +95,7 @@ async def similarity_search(
             {
                 "service": row["service"],
                 "price": row["price"],
+                "price_type": row["price_type"],
                 "distance": distance,
                 "tenant_id": tenant_id,
             }
@@ -115,8 +116,10 @@ async def upsert_items(
     """
     Insert or update catalogue items for a tenant.
 
-    Each item must contain: service (str), price (float), description (str),
-    embedding (list[float]). Optional: metadata (dict).
+    Each item must contain: service (str), price (float | None), price_type (str),
+    description (str), embedding (list[float]). Optional: metadata (dict).
+
+    price=None is valid for VARIABLE items — asyncpg maps None → NULL correctly.
 
     Returns the number of rows written.
     """
@@ -125,11 +128,12 @@ async def upsert_items(
         await conn.executemany(
             """
             INSERT INTO catalogue_items
-                (tenant_id, service, price, description, embedding, metadata)
-            VALUES ($1, $2, $3, $4, $5::vector, $6::jsonb)
+                (tenant_id, service, price, price_type, description, embedding, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6::vector, $7::jsonb)
             ON CONFLICT (tenant_id, service)
             DO UPDATE SET
                 price       = EXCLUDED.price,
+                price_type  = EXCLUDED.price_type,
                 description = EXCLUDED.description,
                 embedding   = EXCLUDED.embedding,
                 metadata    = EXCLUDED.metadata
@@ -138,7 +142,8 @@ async def upsert_items(
                 (
                     tenant_id,
                     item["service"],
-                    item["price"],
+                    item["price"],           # None ⟺ VARIABLE → NULL in DB
+                    item["price_type"],
                     item.get("description", ""),
                     json.dumps(item["embedding"]),
                     json.dumps(item.get("metadata", {})),

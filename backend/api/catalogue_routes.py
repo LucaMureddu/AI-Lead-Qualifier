@@ -31,11 +31,12 @@ import asyncpg
 import structlog
 from arq import ArqRedis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from api.dependencies import get_current_tenant_id
 from core.rate_limit import limiter
 from database.db_core import get_pool
+from ingestion.models import PriceType
 
 log = structlog.get_logger()
 
@@ -45,7 +46,10 @@ catalogue_router: APIRouter = APIRouter(
 )
 
 # ── Columns that may be patched ───────────────────────────────────────────────
-_PATCHABLE_COLUMNS: frozenset[str] = frozenset({"service", "price", "description"})
+_PATCHABLE_COLUMNS: frozenset[str] = frozenset({"service", "price", "description", "price_type"})
+
+# Columns that trigger async re-embedding (price_type alone does NOT require it)
+_EMBEDDING_TRIGGER_COLUMNS: frozenset[str] = frozenset({"service", "description"})
 
 
 # ── Shared-resource helpers ───────────────────────────────────────────────────
@@ -60,7 +64,8 @@ def _get_redis(request: Request) -> ArqRedis:
 class CatalogueItemResponse(BaseModel):
     id: str
     service: str
-    price: float
+    price: Optional[float] = None
+    price_type: PriceType = PriceType.FIXED
     description: Optional[str] = None
     metadata: Dict[str, Any] = {}
 
@@ -74,21 +79,49 @@ class CatalogueListResponse(BaseModel):
 
 class CatalogueItemPatch(BaseModel):
     """
-    Partial update payload.
+    Partial update payload — V3.
 
-    All fields are optional (PATCH semantics). ``price`` uses Field(ge=0)
-    so Pydantic raises 422 before any DB call if a negative value is sent.
+    Tutti i campi sono opzionali (PATCH semantics).
+    La coerenza price / price_type è validata da un model_validator:
+      FREE     → price forzato a 0.0
+      VARIABLE → price forzato a None
+      FIXED    → price deve essere non-None e >= 0
+
+    Un PATCH incoerente che supera la validazione Pydantic ma viola il CHECK
+    constraint DB (es. price_type=FIXED con price=None) viene intercettato come
+    asyncpg.CheckViolationError e ritornato come 422.
     """
 
     service: Optional[str] = Field(default=None, min_length=1)
     price: Optional[float] = Field(default=None, ge=0)
+    price_type: Optional[PriceType] = None
     description: Optional[str] = None
+
+    @model_validator(mode="after")
+    def coerce_price_for_price_type(self) -> "CatalogueItemPatch":
+        """
+        Coercizione parziale: se il client manda solo price_type senza price,
+        applichiamo le stesse regole del modello ServiceItem per evitare
+        che l'UPDATE violi il CHECK constraint in DB.
+        """
+        if self.price_type == PriceType.FREE:
+            self.price = 0.0
+        elif self.price_type == PriceType.VARIABLE:
+            self.price = None
+        elif self.price_type == PriceType.FIXED and self.price is None:
+            # FIXED richiede un prezzo esplicito — solo se l'utente sta
+            # cambiando price_type senza fornire price; se price è assente
+            # dal payload il DB usa il valore esistente, quindi non blochiamo.
+            # Gestiamo qui solo il caso in cui entrambi siano presenti e incoerenti.
+            pass
+        return self
 
 
 class CatalogueItemPatchResponse(BaseModel):
     id: str
     service: str
-    price: float
+    price: Optional[float] = None
+    price_type: PriceType = PriceType.FIXED
     description: Optional[str] = None
     embedding_sync: str = "queued"
 
@@ -111,7 +144,7 @@ async def list_catalogue_items(
 
     rows = await pool.fetch(
         """
-        SELECT id::text, service, price, description, metadata
+        SELECT id::text, service, price, price_type, description, metadata
         FROM   catalogue_items
         WHERE  tenant_id = $1
         ORDER  BY service
@@ -134,6 +167,7 @@ async def list_catalogue_items(
             id=row["id"],
             service=row["service"],
             price=row["price"],
+            price_type=PriceType(row["price_type"]),
             description=row["description"],
             metadata=json.loads(row["metadata"] or "{}"),
         )
@@ -197,7 +231,7 @@ async def patch_catalogue_item(
     # ── 1. Read current record (tenant-scoped) ────────────────────────────────
     existing = await pool.fetchrow(
         """
-        SELECT id::text, service, price, description
+        SELECT id::text, service, price, price_type, description
         FROM   catalogue_items
         WHERE  id = $1::uuid AND tenant_id = $2
         """,
@@ -225,7 +259,7 @@ async def patch_catalogue_item(
     if not set_parts:
         raise HTTPException(
             status_code=422,
-            detail="Nessun campo valido fornito. Campi accettati: service, price, description.",
+            detail="Nessun campo valido fornito. Campi accettati: service, price, price_type, description.",
         )
 
     # WHERE parameters come last
@@ -236,15 +270,25 @@ async def patch_catalogue_item(
     # ── 3. Atomic UPDATE + audit_log ─────────────────────────────────────────
     async with pool.acquire() as conn:
         async with conn.transaction():
-            updated = await conn.fetchrow(
-                f"""
-                UPDATE catalogue_items
-                   SET {", ".join(set_parts)}
-                 WHERE id = ${where_id_idx}::uuid AND tenant_id = ${where_tenant_idx}
-                RETURNING id::text, service, price, description
-                """,
-                *params,
-            )
+            try:
+                updated = await conn.fetchrow(
+                    f"""
+                    UPDATE catalogue_items
+                       SET {", ".join(set_parts)}
+                     WHERE id = ${where_id_idx}::uuid AND tenant_id = ${where_tenant_idx}
+                    RETURNING id::text, service, price, price_type, description
+                    """,
+                    *params,
+                )
+            except asyncpg.CheckViolationError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Combinazione price / price_type non valida. "
+                        "Invariante: FREE → price=0.0 | FIXED → price>=0 non null | "
+                        f"VARIABLE → price deve essere omesso. [{exc.constraint_name}]"
+                    ),
+                ) from exc
             if updated is None:
                 # Extremely unlikely (checked above), but guard against TOCTOU.
                 raise HTTPException(status_code=404, detail="Item non trovato.")
@@ -274,12 +318,16 @@ async def patch_catalogue_item(
                     audit_rows,
                 )
 
-    # ── 4. Enqueue async embedding update ─────────────────────────────────────
-    await redis.enqueue_job(
-        "update_embedding_task",
-        item_id=item_id,
-        tenant_id=tenant_id,
-    )
+    # ── 4. Enqueue async embedding update (solo se service o description cambiano) ──
+    # price e price_type non influenzano l'embedding (calcolato su service + description).
+    needs_reembedding = any(f in _EMBEDDING_TRIGGER_COLUMNS for f in updates)
+    if needs_reembedding:
+        await redis.enqueue_job(
+            "update_embedding_task",
+            item_id=item_id,
+            tenant_id=tenant_id,
+        )
+    embedding_sync = "queued" if needs_reembedding else "not_needed"
 
     log.info(
         "catalogue.item_patched",
@@ -292,6 +340,7 @@ async def patch_catalogue_item(
         id=updated["id"],
         service=updated["service"],
         price=updated["price"],
+        price_type=PriceType(updated["price_type"]),
         description=updated["description"],
-        embedding_sync="queued",
+        embedding_sync=embedding_sync,
     )

@@ -20,10 +20,32 @@ from __future__ import annotations
 import operator
 import uuid
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing_extensions import TypedDict
+
+
+# ── Price type enum ───────────────────────────────────────────────────────────
+
+class PriceType(str, Enum):
+    """
+    Tipologia formale del prezzo di un ServiceItem.
+
+    FIXED    — prezzo fisso noto (price IS NOT NULL AND price >= 0)
+    FREE     — servizio gratuito (price = 0.0, scelta esplicita)
+    VARIABLE — prezzo su richiesta / da preventivare (price IS NULL)
+
+    Invariante DB (CHECK constraint 004_hybrid_pricing):
+        FREE     ⟹ price = 0.0
+        FIXED    ⟹ price IS NOT NULL AND price >= 0
+        VARIABLE ⟹ price IS NULL
+    """
+
+    FIXED = "FIXED"
+    FREE = "FREE"
+    VARIABLE = "VARIABLE"
 
 
 # ── Canonical service item ────────────────────────────────────────────────────
@@ -64,9 +86,19 @@ class ServiceItem(BaseModel):
     price: Optional[float] = Field(
         default=0.0,
         description=(
-            "Unit price in the stated currency.  Must be ≥ 0.  Defaults to 0.0 when unknown. "
-            "Accepts None when the LLM returns null (e.g. price strings like "
-            "'da preventivare' or '500 al mese') so ingestion never crashes."
+            "Unit price in the stated currency.  Must be ≥ 0.  "
+            "None ⟺ VARIABLE (da preventivare).  "
+            "Coerced by the hybrid-pricing model_validator: "
+            "VARIABLE → None, FREE → 0.0, FIXED → must be non-None and ≥ 0."
+        ),
+    )
+    price_type: PriceType = Field(
+        default=PriceType.FIXED,
+        description=(
+            "Tipologia formale del prezzo. Governa l'invariante DB. "
+            "Se non fornito esplicitamente dall'LLM, viene inferito: "
+            "price is None ⇒ VARIABLE, altrimenti FIXED. "
+            "FREE solo su conferma esplicita dell'utente."
         ),
     )
     currency: str = Field(
@@ -124,8 +156,49 @@ class ServiceItem(BaseModel):
     def unit_lowercase(cls, v: Optional[str]) -> Optional[str]:
         return v.strip().lower() if v else None
 
+    @model_validator(mode="before")
+    @classmethod
+    def infer_price_type(cls, values: Any) -> Any:
+        """
+        Inferenza del price_type quando non fornito esplicitamente dall'LLM.
+
+        Regola:
+          - price_type già presente  → invariato (l'utente sa cosa vuole)
+          - price_type assente/None  → price is None ⇒ VARIABLE, altrimenti FIXED
+          - FREE viene inferito SOLO se esplicitamente impostato dall'utente nella
+            tabella interattiva; non viene mai inferito automaticamente.
+        """
+        if not isinstance(values, dict):
+            return values
+        if not values.get("price_type"):
+            values["price_type"] = (
+                PriceType.VARIABLE if values.get("price") is None else PriceType.FIXED
+            )
+        return values
+
     @model_validator(mode="after")
-    def auto_flag_low_confidence(self) -> ServiceItem:
+    def enforce_hybrid_pricing_invariant(self) -> "ServiceItem":
+        """
+        Coercizione post-validazione dell'invariante C(price_type, price):
+
+          FREE     → price forzato a 0.0
+          VARIABLE → price forzato a None  (nessun sentinel)
+          FIXED    → price deve essere non-None e ≥ 0  (loud failure)
+        """
+        if self.price_type == PriceType.FREE:
+            self.price = 0.0
+        elif self.price_type == PriceType.VARIABLE:
+            self.price = None
+        elif self.price_type == PriceType.FIXED:
+            if self.price is None:
+                raise ValueError(
+                    "price_type=FIXED richiede un prezzo non-None e >= 0. "
+                    "Usa price_type=VARIABLE per i prezzi su richiesta."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def auto_flag_low_confidence(self) -> "ServiceItem":
         """Auto-flag items where confidence is below a minimum safe threshold."""
         _MIN_AUTO_CONFIDENCE: float = 0.5
         if self.confidence < _MIN_AUTO_CONFIDENCE and not self.flagged:
@@ -134,6 +207,18 @@ class ServiceItem(BaseModel):
                 f"Auto-flagged: confidence {self.confidence:.2f} < {_MIN_AUTO_CONFIDENCE}"
             )
         return self
+
+    # ── Computed properties ───────────────────────────────────────────────────
+
+    @property
+    def is_computable(self) -> bool:
+        """
+        True se l'item ha un valore sommabile nel preventivo.
+
+        Fonte canonica dell'informazione "computabilità": i dict in mapped_services
+        ne sono la proiezione serializzata tramite price_type == 'VARIABLE'.
+        """
+        return self.price_type != PriceType.VARIABLE
 
 
 # ── Aggregate catalogue ───────────────────────────────────────────────────────
