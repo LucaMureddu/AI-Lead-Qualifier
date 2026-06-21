@@ -124,8 +124,9 @@ test.describe("Catalogo Servizi — caricamento", () => {
     // Aspetta che il bottone mostri "Ricarica" (non "Caricamento…") prima di cliccare
     const reloadBtn = page.getByRole("button", { name: /Ricarica/ });
     await expect(reloadBtn).toBeVisible();
+    const reloadResponse = page.waitForResponse("**/api/catalog/items**");
     await reloadBtn.click();
-    await page.waitForResponse("**/api/catalog/items**");
+    await reloadResponse;
     expect(callCount).toBeGreaterThan(initialCount);
   });
 });

@@ -426,9 +426,9 @@ export async function patchCatalogueItem(itemId, patch) {
   });
   if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
   if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
-    try { const j = await res.json(); if (j?.detail) detail = j.detail; } catch { /* noop */ }
-    throw new Error(detail);
+    let detail = "";
+    try { const j = await res.json(); if (j?.detail) detail = ": " + j.detail; } catch { /* noop */ }
+    throw new Error(`HTTP ${res.status}${detail}`);
   }
   return res.json();
 }
