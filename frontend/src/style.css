@@ -8,7 +8,7 @@
     font-family: theme("fontFamily.sans");
   }
   body {
-    @apply bg-slate-50 text-slate-800 antialiased;
+    @apply bg-white text-slate-700 text-sm antialiased;
   }
   /* Evita il flash dei nodi Alpine non ancora inizializzati */
   [x-cloak] {
@@ -20,34 +20,41 @@
 @layer components {
   .btn-primary {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg
-      bg-indigo-600 text-white font-medium hover:bg-indigo-700
-      disabled:opacity-50 disabled:cursor-not-allowed transition;
+      bg-gradient-to-r from-indigo-600 to-violet-600
+      hover:from-indigo-500 hover:to-violet-500
+      text-white font-medium shadow-md shadow-indigo-500/20
+      focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2
+      disabled:opacity-50 disabled:cursor-not-allowed
+      transition-all duration-200 hover:-translate-y-0.5;
   }
   .btn-success {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg
       bg-emerald-600 text-white font-medium hover:bg-emerald-700
+      focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2
       disabled:opacity-50 disabled:cursor-not-allowed transition;
   }
   .btn-danger {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg
       bg-rose-600 text-white font-medium hover:bg-rose-700
+      focus:outline-none focus:ring-2 focus:ring-rose-500 focus:ring-offset-2
       disabled:opacity-50 disabled:cursor-not-allowed transition;
   }
   .btn-ghost {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg
-      bg-white text-slate-700 font-medium border border-slate-200
-      hover:bg-slate-50 disabled:opacity-50 transition;
+      bg-white text-slate-700 font-medium border border-slate-300
+      hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2
+      disabled:opacity-50 transition;
   }
   .card {
-    @apply bg-white border border-slate-200 rounded-xl shadow-sm p-6;
+    @apply bg-white ring-1 ring-slate-900/5 shadow-xl shadow-slate-200/50 rounded-2xl p-6;
   }
   .input-text {
-    @apply w-full rounded-lg border border-slate-200 px-3 py-2 text-slate-800
+    @apply w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800
       placeholder:text-slate-400
-      focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition;
+      focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition;
   }
   .terminal {
-    @apply bg-slate-900 text-slate-100 font-mono text-sm rounded-xl p-4 overflow-y-auto;
+    @apply bg-slate-950 text-slate-300 font-mono text-xs rounded-xl p-4 overflow-y-auto;
   }
   .dropzone {
     @apply border-2 border-dashed border-slate-300 rounded-xl p-10
@@ -62,7 +69,8 @@
       hover:bg-slate-100 hover:text-slate-900 transition cursor-pointer;
   }
   .nav-link--active {
-    @apply bg-indigo-50 text-indigo-700 hover:bg-indigo-50 hover:text-indigo-700;
+    @apply bg-indigo-50/50 text-indigo-700 ring-1 ring-indigo-100
+      hover:bg-indigo-50/50 hover:text-indigo-700;
   }
   .badge {
     @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold;

@@ -119,7 +119,7 @@ Stack opzionale Promtail + Loki + Grafana attivabile via `docker-compose.obs.yml
 | LLM Inference | Ollama / LM Studio / vLLM (OpenAI-compatible) |
 | Auth & Security | PyJWT (RS256 asimmetrico, chiavi PEM) |
 | Observability | structlog (JSON) + Promtail + Loki + Grafana |
-| Frontend | Vite + Alpine.js + Tailwind CSS |
+| Frontend | Vite + Alpine.js + Tailwind CSS + jsPDF |
 | Testing | pytest + Testcontainers + Playwright |
 | Linting / Types | Ruff + Mypy |
 | Load Testing | Locust |

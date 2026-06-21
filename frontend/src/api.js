@@ -1,16 +1,19 @@
-// src/api.js — V2
+// src/api.js — V3
 // ------------------------------------------------------------------
 // Communication layer with the backend.
+//
+// V3 changes vs V2
+// ----------------
+// - Poller constructor now accepts explicit `token` param (falls back to
+//   localStorage if omitted — zero breaking change for existing callers)
+// - getLeadStatus signature updated to accept optional token
+// - patchCatalogueItem updated: accepts price_type field (V3 hybrid pricing)
 //
 // V2 changes vs V1
 // ----------------
 // - SSE (streamSSE, qualifyStream) REMOVED from lead qualification
-// - NEW: submitLead (POST /lead → 202), getLeadStatus (GET /status/{id}),
-//   approveLead (POST /lead/{id}/approve)
-// - NEW: Poller class — replaces SSE ReadableStream with interval polling
-// - JWT: now RS256 (same localStorage key, transparent to this layer)
-// - Kept: ingestStream (SSE for catalogue ingestion), uploadCatalogue,
-//         approveIngestion, wipeVectorData, checkHealth, profile endpoints
+// - Poller class — replaces SSE ReadableStream with setInterval + fetch
+// - Kept: ingestStream (SSE for catalogue ingestion), all other endpoints
 
 import { API_BASE_URL } from "./config.js";
 
@@ -23,10 +26,17 @@ function getToken() {
   return localStorage.getItem(TOKEN_KEY);
 }
 
-function authHeaders(extra = {}) {
-  const token = getToken();
+/**
+ * Build Authorization + optional extra headers.
+ * Accepts an explicit token; falls back to localStorage for callers that
+ * do not thread the token through (e.g. background Poller ticks).
+ * @param {string|null} [token]
+ * @param {Object} [extra]
+ */
+function authHeaders(token = null, extra = {}) {
+  const tok = token ?? getToken();
   return {
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(tok ? { Authorization: `Bearer ${tok}` } : {}),
     ...extra,
   };
 }
@@ -57,18 +67,19 @@ export async function login(username) {
   return access_token;
 }
 
-// ── Lead qualification — V2 async polling (no SSE) ───────────────────────────
+// ── Lead qualification — async polling (no SSE) ───────────────────────────────
 
 /**
- * POST /lead — enqueue a lead job, returns { thread_id, status: "queued" }.
+ * POST /lead — enqueue a lead job.
  * @param {string} rawText
- * @param {string} token
- * @param {string|null} leadId  Optional external identifier.
+ * @param {string|null} [token]  JWT; falls back to localStorage.
+ * @param {string|null} [leadId] Optional external CRM identifier.
+ * @returns {Promise<{ thread_id: string, status: "queued" }>}
  */
-export async function submitLead(rawText, token, leadId = null) {
+export async function submitLead(rawText, token = null, leadId = null) {
   const res = await fetch(`${BASE}/lead`, {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: authHeaders(token, { "Content-Type": "application/json" }),
     body: JSON.stringify({ raw_text: rawText, lead_id: leadId }),
   });
   if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
@@ -82,19 +93,22 @@ export async function submitLead(rawText, token, leadId = null) {
 
 /**
  * GET /status/{threadId} — poll the current state of a lead job.
+ *
+ * Security: threadId is URL-encoded; the raw lead payload is never logged.
  * @param {string} threadId
- * @returns {Promise<{thread_id, status, result, error_detail}>}
+ * @param {string|null} [token]  JWT; falls back to localStorage.
+ * @returns {Promise<{ thread_id: string, status: string, result: Object|null, error_detail: string|null }>}
  */
-export async function getLeadStatus(threadId) {
+export async function getLeadStatus(threadId, token = null) {
   const res = await fetch(`${BASE}/status/${encodeURIComponent(threadId)}`, {
-    headers: authHeaders(),
+    headers: authHeaders(token),
     cache: "no-store",
   });
   if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
     try { const j = await res.json(); if (j?.detail) detail = j.detail; } catch { /* noop */ }
-    throw new Error(detail);
+    throw new Error(`[${threadId}] ${detail}`);
   }
   return res.json();
 }
@@ -103,13 +117,13 @@ export async function getLeadStatus(threadId) {
  * POST /lead/{threadId}/approve — approve or reject a pending_review job.
  * @param {string} threadId
  * @param {boolean} approved
- * @param {string|null} feedback
- * @returns {Promise<{thread_id, status}>}
+ * @param {string|null} [feedback]
+ * @returns {Promise<{ thread_id: string, status: string }>}
  */
 export async function approveLead(threadId, approved, feedback = null) {
   const res = await fetch(`${BASE}/lead/${encodeURIComponent(threadId)}/approve`, {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: authHeaders(null, { "Content-Type": "application/json" }),
     body: JSON.stringify({ approved, feedback: feedback || null }),
   });
   if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
@@ -126,53 +140,86 @@ export async function approveLead(threadId, approved, feedback = null) {
 /**
  * Polls GET /status/{threadId} at a fixed interval.
  *
- * Features:
- * - No-overlap: skips a tick if the previous request is still in flight.
- * - Auto-stops when status reaches a terminal state (completed|error|pending_review).
- * - Exposes start() / stop() for lifecycle management.
+ * Contract:
+ * - No-overlap: if a tick is still in flight when the next interval fires,
+ *   the new tick is skipped entirely. This prevents request pile-up on slow
+ *   networks without cancellation complexity.
+ * - Auto-stop: stops itself when status reaches a LangGraph terminal state
+ *   ("completed" | "error" | "pending_review"). The caller does not need to
+ *   track state externally.
+ * - Security: never logs the lead payload; only threadId and HTTP status codes
+ *   appear in console output.
  *
  * @example
- *   new Poller({
+ *   const poller = new Poller({
  *     threadId,
+ *     token,                          // optional, falls back to localStorage
  *     intervalMs: 2500,
  *     onUpdate: (data) => { store.status = data.status; },
- *     onDone:   (data) => { store.result = data.result; },
- *     onError:  (err)  => { console.error(err); },
- *   }).start();
+ *     onDone:   (data) => { store.result = data.result; store.pollingActive = false; },
+ *     onError:  (err)  => { console.error("[Poller]", err.message); store.pollingActive = false; },
+ *   });
+ *   poller.start();
+ *   // later: poller.stop() if the user navigates away
  */
 export class Poller {
-  constructor({ threadId, intervalMs = 2500, onUpdate, onDone, onError }) {
-    this.threadId = threadId;
+  /** Terminal states that cause the poller to stop automatically. */
+  static TERMINAL = new Set(["completed", "error", "pending_review"]);
+
+  /**
+   * @param {Object} opts
+   * @param {string}        opts.threadId     ARQ job thread ID.
+   * @param {string|null}   [opts.token]      JWT Bearer token; falls back to localStorage.
+   * @param {number}        [opts.intervalMs] Poll interval in ms (default 2500).
+   * @param {Function}      [opts.onUpdate]   Called on every non-terminal tick with full response.
+   * @param {Function}      [opts.onDone]     Called once when a terminal state is reached.
+   * @param {Function}      [opts.onError]    Called on network/HTTP error; poller stops.
+   */
+  constructor({ threadId, token = null, intervalMs = 2500, onUpdate, onDone, onError }) {
+    this.threadId  = threadId;
+    this.token     = token;
     this.intervalMs = intervalMs;
-    this.onUpdate = onUpdate;
-    this.onDone = onDone;
-    this.onError = onError;
-    this._timer = null;
+    this.onUpdate  = onUpdate;
+    this.onDone    = onDone;
+    this.onError   = onError;
+
+    /** @type {number|null} setInterval handle */
+    this._timer    = null;
+    /** Guards against concurrent in-flight requests (no-overlap invariant). */
     this._inflight = false;
   }
 
+  /**
+   * Start polling. Fires an immediate first tick, then repeats at intervalMs.
+   * @returns {this} Chainable.
+   */
   start() {
-    this._tick(); // immediate first poll
+    if (this._timer !== null) return this; // idempotent
+    this._tick();
     this._timer = setInterval(() => this._tick(), this.intervalMs);
     return this;
   }
 
+  /** Stop polling and release the interval. Idempotent. */
   stop() {
+    if (this._timer === null) return;
     clearInterval(this._timer);
     this._timer = null;
   }
 
+  /** @private */
   async _tick() {
-    if (this._inflight) return; // no-overlap guard
+    if (this._inflight) return; // no-overlap guard — skip this tick
     this._inflight = true;
     try {
-      const data = await getLeadStatus(this.threadId);
+      const data = await getLeadStatus(this.threadId, this.token);
       this.onUpdate?.(data);
-      if (["completed", "error", "pending_review"].includes(data.status)) {
+      if (Poller.TERMINAL.has(data.status)) {
         this.stop();
         this.onDone?.(data);
       }
     } catch (err) {
+      console.error(`[Poller] thread=${this.threadId} error:`, err.message);
       this.stop();
       this.onError?.(err);
     } finally {
@@ -181,12 +228,7 @@ export class Poller {
   }
 }
 
-// ── Catalogue ingestion (SSE kept for ingest flow) ────────────────────────────
-
-function _formatSseHelper(data, { onEvent, onMeta, signal } = {}) {
-  // shared SSE stream consumer (used by ingestStream only in V2)
-  return { data, onEvent, onMeta, signal };
-}
+// ── Catalogue ingestion (SSE kept — ingest flow only) ─────────────────────────
 
 async function _consumeSSE(res, { onEvent, onMeta } = {}) {
   const threadId = res.headers.get("X-Thread-Id");
@@ -200,7 +242,6 @@ async function _consumeSSE(res, { onEvent, onMeta } = {}) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-
     let sep;
     while ((sep = buffer.indexOf("\n\n")) !== -1) {
       const rawFrame = buffer.slice(0, sep);
@@ -235,7 +276,7 @@ function _parseFrame(raw) {
 export async function ingestStream(payload, { onEvent, onMeta, signal } = {}) {
   const res = await fetch(`${BASE}/ingest/stream`, {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json", Accept: "text/event-stream" }),
+    headers: authHeaders(null, { "Content-Type": "application/json", Accept: "text/event-stream" }),
     body: JSON.stringify(payload),
     signal,
   });
@@ -274,7 +315,7 @@ export async function uploadCatalogue(file) {
 export async function approveIngestion(threadId, decision) {
   const res = await fetch(`${BASE}/ingest/${encodeURIComponent(threadId)}/approve`, {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: authHeaders(null, { "Content-Type": "application/json" }),
     body: JSON.stringify(decision),
   });
   if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
@@ -293,7 +334,7 @@ export async function approveIngestion(threadId, decision) {
 export async function wipeVectorData(tenantId) {
   const res = await fetch(`${BASE}/api/v1/tenants/${encodeURIComponent(tenantId)}/vector-data`, {
     method: "DELETE",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: authHeaders(null, { "Content-Type": "application/json" }),
     body: JSON.stringify({ confirm_wipe: true }),
   });
   if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
@@ -305,7 +346,7 @@ export async function wipeVectorData(tenantId) {
   return res.json();
 }
 
-/** GET /health */
+/** GET /health — returns true if both Postgres and Redis are reachable. */
 export async function checkHealth() {
   try {
     const res = await fetch(`${BASE}/health`, { cache: "no-store" });
@@ -330,7 +371,7 @@ export async function getTenantProfile(tenantId) {
 export async function saveTenantProfile(tenantId, profile) {
   const res = await fetch(`${BASE}/tenants/${encodeURIComponent(tenantId)}/profile`, {
     method: "PUT",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: authHeaders(null, { "Content-Type": "application/json" }),
     body: JSON.stringify(profile),
   });
   if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }
@@ -346,7 +387,7 @@ export async function saveTenantProfile(tenantId, profile) {
 
 /**
  * GET /api/catalog/items?skip=…&limit=…
- * @returns {Promise<{items: Array, total: number, skip: number, limit: number}>}
+ * @returns {Promise<{ items: Array, total: number, skip: number, limit: number }>}
  */
 export async function listCatalogueItems(skip = 0, limit = 20) {
   const url = `${BASE}/api/catalog/items?skip=${skip}&limit=${limit}`;
@@ -357,15 +398,30 @@ export async function listCatalogueItems(skip = 0, limit = 20) {
 }
 
 /**
- * PATCH /api/catalog/items/{item_id}
+ * PATCH /api/catalog/items/{item_id} — partial update (V3 hybrid pricing).
+ *
+ * Accepted fields:
+ *   service      {string}             rename the service
+ *   price        {number|null}        null when price_type = "VARIABLE"
+ *   price_type   {"FIXED"|"FREE"|"VARIABLE"}
+ *   description  {string|null}
+ *
+ * Invariant enforced by the DB CHECK constraint:
+ *   FIXED    → price must be non-null and ≥ 0
+ *   FREE     → price is coerced to 0.0
+ *   VARIABLE → price is coerced to null
+ *
+ * HTTP 422 is returned for incoherent combinations (e.g. FIXED + price=null).
+ *
  * @param {string} itemId
- * @param {{ service?: string, price?: number, description?: string | null }} patch
- * @returns {Promise<Object>} Updated item
+ * @param {{ service?: string, price?: number|null, price_type?: string, description?: string|null }} patch
+ * @returns {Promise<{ id: string, service: string, price: number|null, price_type: string,
+ *                     description: string|null, embedding_sync: string }>}
  */
 export async function patchCatalogueItem(itemId, patch) {
   const res = await fetch(`${BASE}/api/catalog/items/${encodeURIComponent(itemId)}`, {
     method: "PATCH",
-    headers: authHeaders({ "Content-Type": "application/json" }),
+    headers: authHeaders(null, { "Content-Type": "application/json" }),
     body: JSON.stringify(patch),
   });
   if (res.status === 401) { handle401(); throw new Error("Sessione scaduta."); }

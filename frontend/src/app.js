@@ -30,6 +30,8 @@ import qualify from "./stores/qualify.js";
 import ingest from "./stores/ingest.js";
 import settings from "./stores/settings.js";
 import catalog from "./stores/catalog.js";
+import toast from "./stores/toast.js";
+import rowComponent from "./components/row.js";
 import {
   API_BASE_URL,
   HEALTH_POLL_MS,
@@ -84,6 +86,7 @@ const App = {
     store("auth").clear();
     store("qualify").reset?.();
     store("ingest").reset?.();
+    store("toast").clear?.();
   },
 
   // ── FASE 1: connessione ──────────────────────────────────────────────────────
@@ -439,6 +442,12 @@ Alpine.store("qualify", qualify);
 Alpine.store("ingest", ingest);
 Alpine.store("settings", settings);
 Alpine.store("catalog", catalog);
+Alpine.store("toast", toast);
+
+// ── Registrazione componenti riutilizzabili (x-data="rowComponent(item)") ────────
+// Il componente di riga del catalogo vive in un modulo separato dal markup
+// (vincolo: logica fuori dall'HTML). Riceve l'item come argomento dall'x-for.
+Alpine.data("rowComponent", rowComponent);
 
 // ── Esposizione globale per il markup (x-on / x-effect / x-init) ────────────────
 window.Alpine = Alpine;

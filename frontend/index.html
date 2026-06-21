@@ -17,11 +17,56 @@
     >
 
       <!-- ══════════════════════════════════════════════════════════════════ -->
+      <!-- TOAST GLOBALI (impilabili, autochiusura via TTL nello store)       -->
+      <!-- Renderizzati in alto a destra; reattivi a $store.toast.items.      -->
+      <!-- ══════════════════════════════════════════════════════════════════ -->
+      <div
+        class="fixed top-4 right-4 z-[60] flex flex-col gap-2 w-[22rem] max-w-[calc(100vw-2rem)] pointer-events-none"
+        aria-live="polite"
+        aria-atomic="false"
+      >
+        <template x-for="toast in $store.toast.items" :key="toast.id">
+          <div
+            x-transition:enter="transition ease-out duration-200"
+            x-transition:enter-start="opacity-0 translate-x-4"
+            x-transition:enter-end="opacity-100 translate-x-0"
+            x-transition:leave="transition ease-in duration-150"
+            x-transition:leave-start="opacity-100"
+            x-transition:leave-end="opacity-0 translate-x-4"
+            class="pointer-events-auto bg-white rounded-lg shadow-lg ring-1 ring-black/5 px-4 py-3 flex items-start gap-2.5 border-l-4"
+            :class="{
+              'border-emerald-500': toast.type === 'success',
+              'border-rose-500':    toast.type === 'error',
+              'border-indigo-500':  toast.type === 'info',
+            }"
+            role="status"
+          >
+            <!-- Icona success -->
+            <svg x-show="toast.type === 'success'" class="w-4 h-4 mt-0.5 shrink-0 text-emerald-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+            <!-- Icona error -->
+            <svg x-show="toast.type === 'error'" class="w-4 h-4 mt-0.5 shrink-0 text-rose-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+            <!-- Icona info -->
+            <svg x-show="toast.type === 'info'" class="w-4 h-4 mt-0.5 shrink-0 text-indigo-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10A8 8 0 11.001 9.999 8 8 0 0118 10zm-8-4a1 1 0 100 2 1 1 0 000-2zm1 5a1 1 0 10-2 0v3a1 1 0 102 0v-3z" clip-rule="evenodd"/></svg>
+
+            <p class="flex-1 text-sm leading-snug text-slate-700" x-text="toast.message"></p>
+
+            <button
+              @click="$store.toast.remove(toast.id)"
+              class="shrink-0 mt-0.5 text-slate-300 hover:text-slate-500 transition-colors focus:outline-none focus:ring-2 focus:ring-slate-300 rounded"
+              aria-label="Chiudi notifica"
+            >
+              <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+            </button>
+          </div>
+        </template>
+      </div>
+
+      <!-- ══════════════════════════════════════════════════════════════════ -->
       <!-- SCHERMATA DI LOGIN (visibile solo se non autenticato)             -->
       <!-- ══════════════════════════════════════════════════════════════════ -->
       <div
         x-show="!$store.auth.isAuthenticated"
-        class="min-h-screen bg-slate-50 flex items-center justify-center p-4"
+        class="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-50 via-white to-indigo-50/30 flex items-center justify-center p-4"
       >
         <div class="card w-full max-w-sm">
           <!-- Brand -->
@@ -30,7 +75,7 @@
               <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z"/></svg>
             </span>
             <div class="leading-tight">
-              <p class="font-semibold text-slate-800">Lead Qualifier</p>
+              <p class="font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-violet-600">Lead Qualifier</p>
               <p class="text-xs text-slate-400">AI Console — Private Cloud</p>
             </div>
           </div>
@@ -90,7 +135,7 @@
 
       <!-- ── Sidebar ────────────────────────────────────────────────────── -->
       <aside
-        class="fixed md:static inset-y-0 left-0 z-40 w-64 shrink-0 bg-white border-r border-slate-200 flex flex-col transform transition-transform duration-200 md:translate-x-0"
+        class="fixed md:static inset-y-0 left-0 z-40 w-64 shrink-0 bg-slate-50 border-r border-slate-200 flex flex-col transform transition-transform duration-200 md:translate-x-0"
         :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'"
       >
         <div class="h-16 flex items-center gap-2.5 px-5 border-b border-slate-200">
@@ -100,7 +145,7 @@
             <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z"/></svg>
           </span>
           <div class="leading-tight">
-            <p class="font-semibold text-slate-800">Lead Qualifier</p>
+            <p class="font-semibold text-slate-900">Lead Qualifier</p>
             <p class="text-xs text-slate-400">AI Console</p>
           </div>
         </div>
@@ -173,8 +218,8 @@
             </button>
 
             <h1
-              class="text-lg font-semibold text-slate-800 truncate"
-              x-text="({ qualify: 'Qualifica Lead', ingest: 'Gestione Cataloghi', settings: 'Impostazioni' })[view]"
+              class="text-lg font-semibold text-slate-900 truncate"
+              x-text="({ qualify: 'Qualifica Lead', ingest: 'Gestione Cataloghi', catalog: 'Catalogo Servizi', settings: 'Impostazioni' })[view]"
             ></h1>
 
             <div class="ml-auto flex items-center gap-2 sm:gap-3">
@@ -207,7 +252,7 @@
         </header>
 
         <!-- Main content -->
-        <main class="flex-1 overflow-y-auto">
+        <main class="flex-1 overflow-y-auto bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-50 via-white to-indigo-50/30">
           <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
             <!-- ════════════════════════════════════════════════════════════ -->
             <!-- FASE 2 — Qualificazione Lead                                  -->
@@ -219,7 +264,7 @@
               <!-- Colonna input -->
               <div class="card flex flex-col gap-4">
                 <div>
-                  <h2 class="font-semibold text-slate-800">Richiesta del lead</h2>
+                  <h2 class="font-semibold text-slate-900">Richiesta del lead</h2>
                   <p class="text-sm text-slate-500">
                     Incolla l'email o la richiesta; il grafo AI estrae i servizi e
                     calcola il preventivo.
@@ -302,7 +347,7 @@
                   <div class="card">
                     <p class="text-sm text-slate-500">Preventivo generato</p>
                     <p
-                      class="text-4xl font-bold text-slate-800 mt-1"
+                      class="text-4xl font-bold text-slate-900 mt-1"
                       data-testid="quote-total"
                       x-text="ui.formatMoney($store.qualify.result.total_quote) + ' €'"
                     ></p>
@@ -320,7 +365,7 @@
                             <p class="font-medium text-slate-800 truncate" data-testid="service-name" x-text="svc.matched_name || svc.service || '—'"></p>
                             <p class="text-xs text-slate-400" x-text="'distanza: ' + (svc.distance != null ? Number(svc.distance).toFixed(4) : 'n/d')"></p>
                           </div>
-                          <p class="font-semibold text-slate-800 whitespace-nowrap" x-text="quote.formatServicePrice(svc)"></p>
+                          <p class="font-semibold text-slate-900 whitespace-nowrap" x-text="quote.formatServicePrice(svc)"></p>
                         </li>
                       </template>
                     </ul>
@@ -331,7 +376,7 @@
                 <template x-if="$store.qualify.result && !$store.qualify.errorDetail">
                   <div class="card" x-data="{ copied: false }">
                     <div class="flex items-center justify-between gap-3">
-                      <h3 class="font-semibold text-slate-800">Invia al cliente</h3>
+                      <h3 class="font-semibold text-slate-900">Invia al cliente</h3>
                       <span
                         class="text-xs text-slate-400 truncate"
                         x-show="quote.extractEmail($store.qualify.inputText)"
@@ -400,7 +445,7 @@
             <section x-show="view === 'ingest'" class="flex flex-col gap-6">
               <!-- IDLE: dropzone -->
               <div x-show="$store.ingest.phase === 'idle'" class="card">
-                <h2 class="font-semibold text-slate-800">Onboarding catalogo</h2>
+                <h2 class="font-semibold text-slate-900">Onboarding catalogo</h2>
                 <p class="text-sm text-slate-500 mt-1">
                   Carica un file catalogo. Verrà analizzato e normalizzato dall'AI;
                   gli item incerti passeranno alla tua revisione prima della scrittura.
@@ -492,8 +537,8 @@
                   >
                     <div class="card !bg-rose-50 !border-rose-200">
                       <div class="flex items-start justify-between gap-3">
-                        <p class="font-semibold text-slate-800" x-text="item.name"></p>
-                        <p class="font-semibold text-slate-800 whitespace-nowrap" x-text="ui.formatMoney(item.price) + ' ' + (item.currency || 'EUR')"></p>
+                        <p class="font-semibold text-slate-900" x-text="item.name"></p>
+                        <p class="font-semibold text-slate-900 whitespace-nowrap" x-text="ui.formatMoney(item.price) + ' ' + (item.currency || 'EUR')"></p>
                       </div>
                       <span class="badge bg-rose-100 text-rose-700 mt-2" x-text="item.flag_reason || 'flagged'"></span>
                       <details class="mt-3">
@@ -558,7 +603,7 @@
                     viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
                   ><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg>
                   <h2
-                    class="font-semibold text-slate-800"
+                    class="font-semibold text-slate-900"
                     x-text="$store.ingest.result?.status === 'rejected' ? 'Ingestion rifiutata' : 'Ingestion completata'"
                   ></h2>
                 </div>
@@ -619,22 +664,32 @@
               class="flex flex-col gap-6"
             >
               <!-- Header row -->
-              <div class="flex items-center justify-between gap-3">
+              <div class="flex flex-wrap items-end justify-between gap-3">
                 <div>
-                  <h2 class="font-semibold text-slate-800 text-lg">Catalogo Servizi</h2>
+                  <h2 class="font-semibold text-slate-900 text-lg">Catalogo Servizi</h2>
                   <p class="text-sm text-slate-500 mt-0.5">
-                    Clicca su una riga per modificare nome, prezzo o descrizione.
+                    Pricing ibrido V3. Modifica tipo e prezzo in linea, poi premi
+                    <span class="font-medium text-slate-700">Salva</span> sulla riga.
+                    Rollback automatico se il backend rifiuta la combinazione (422).
                   </p>
                 </div>
-                <button
-                  class="btn-ghost !py-1.5 text-sm"
-                  :disabled="$store.catalog.loading"
-                  @click="$store.catalog.load()"
-                >
-                  <svg x-show="$store.catalog.loading" class="spinner w-4 h-4" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg>
-                  <svg x-show="!$store.catalog.loading" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
-                  <span x-text="$store.catalog.loading ? 'Caricamento…' : 'Ricarica'"></span>
-                </button>
+                <div class="flex items-center gap-2">
+                  <!-- Legenda tipi -->
+                  <div class="hidden md:flex items-center gap-2 text-xs">
+                    <span class="badge bg-slate-100 text-slate-600">Fisso</span>
+                    <span class="badge bg-emerald-50 text-emerald-700">Gratis</span>
+                    <span class="badge bg-amber-50 text-amber-700">Su richiesta</span>
+                  </div>
+                  <button
+                    class="btn-ghost !py-1.5 text-sm"
+                    :disabled="$store.catalog.loading"
+                    @click="$store.catalog.load()"
+                  >
+                    <svg x-show="$store.catalog.loading" class="spinner w-4 h-4" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg>
+                    <svg x-show="!$store.catalog.loading" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+                    <span x-text="$store.catalog.loading ? 'Caricamento…' : 'Ricarica'"></span>
+                  </button>
+                </div>
               </div>
 
               <!-- Error banner -->
@@ -645,35 +700,175 @@
               ></div>
 
               <!-- Table -->
-              <div class="card !p-0 overflow-x-auto">
-                <table class="w-full text-sm">
-                  <thead>
-                    <tr class="border-b border-slate-200 bg-slate-50">
-                      <th class="text-left px-4 py-2.5 font-medium text-slate-600">Servizio</th>
-                      <th class="text-right px-4 py-2.5 font-medium text-slate-600">Prezzo (€)</th>
-                      <th class="hidden sm:table-cell text-left px-4 py-2.5 font-medium text-slate-600">Descrizione</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <template x-if="$store.catalog.items.length === 0 && !$store.catalog.loading">
+              <div class="card !p-0 overflow-hidden">
+                <div class="overflow-x-auto">
+                  <table class="min-w-full text-sm divide-y divide-slate-200">
+                    <thead class="bg-slate-50 text-xs font-medium text-slate-500 uppercase tracking-wider">
                       <tr>
-                        <td colspan="3" class="px-4 py-8 text-center text-slate-400">
+                        <th class="pl-5 pr-3 py-3 text-left w-24">ID</th>
+                        <th class="px-3 py-3 text-left">Servizio</th>
+                        <th class="px-3 py-3 text-left w-44">Tipo prezzo</th>
+                        <th class="px-3 py-3 text-left w-40">Prezzo</th>
+                        <th class="px-3 py-3 text-left hidden lg:table-cell">Descrizione</th>
+                        <th class="px-3 pr-5 py-3 text-right w-36">Azioni</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-200">
+
+                      <!-- Loading -->
+                      <tr x-show="$store.catalog.loading">
+                        <td colspan="6" class="px-5 py-10 text-center">
+                          <svg class="spinner w-5 h-5 mx-auto text-slate-300" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg>
+                          <p class="mt-2 text-xs text-slate-400">Caricamento catalogo…</p>
+                        </td>
+                      </tr>
+
+                      <!-- Empty -->
+                      <tr x-show="!$store.catalog.loading && $store.catalog.items.length === 0">
+                        <td colspan="6" class="px-5 py-10 text-center text-xs text-slate-400">
                           Nessun servizio nel catalogo. Carica un file dalla sezione "Gestione Cataloghi".
                         </td>
                       </tr>
-                    </template>
-                    <template x-for="item in $store.catalog.items" :key="item.id">
-                      <tr
-                        class="border-b border-slate-100 hover:bg-indigo-50 cursor-pointer transition-colors"
-                        @click="$store.catalog.openEdit(item)"
-                      >
-                        <td class="px-4 py-3 font-medium text-slate-800" x-text="item.service"></td>
-                        <td class="px-4 py-3 text-right tabular-nums text-slate-700" x-text="item.price.toLocaleString('it-IT', { minimumFractionDigits: 2 })"></td>
-                        <td class="hidden sm:table-cell px-4 py-3 text-slate-500 truncate max-w-xs" x-text="item.description || '—'"></td>
-                      </tr>
-                    </template>
-                  </tbody>
-                </table>
+
+                      <!-- Data rows: ogni riga è un rowComponent isolato -->
+                      <template x-for="item in $store.catalog.items" :key="item.id">
+                        <tr
+                          x-data="rowComponent(item)"
+                          class="transition-colors duration-150"
+                          :class="{
+                            'bg-amber-50 hover:bg-amber-100/60':     edit.price_type === 'VARIABLE',
+                            'bg-emerald-50 hover:bg-emerald-100/50':  edit.price_type === 'FREE',
+                            'bg-white hover:bg-indigo-50/30':         edit.price_type === 'FIXED',
+                          }"
+                        >
+                          <!-- ID -->
+                          <td class="pl-5 pr-3 py-2.5 align-middle">
+                            <code class="text-xs text-slate-300 font-mono" :title="edit.id" x-text="idTail"></code>
+                          </td>
+
+                          <!-- Servizio -->
+                          <td class="px-3 py-2 align-middle">
+                            <input
+                              type="text"
+                              x-model="edit.service"
+                              placeholder="Nome servizio"
+                              class="block w-full min-w-[10rem] rounded-lg border px-2.5 py-1.5 text-sm text-slate-800 placeholder:text-slate-300 transition-colors duration-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                              :class="edit.service !== original.service ? 'border-indigo-300 bg-indigo-50/60 ring-1 ring-indigo-200' : 'border-slate-200 bg-white/70'"
+                            />
+                          </td>
+
+                          <!-- Tipo prezzo -->
+                          <td class="px-3 py-2 align-middle">
+                            <select
+                              x-model="edit.price_type"
+                              @change="onPriceTypeChange()"
+                              class="block w-full rounded-lg border px-2.5 py-1.5 text-sm font-medium cursor-pointer transition-colors duration-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                              :class="{
+                                'border-amber-300 text-amber-700 bg-amber-50':     edit.price_type === 'VARIABLE',
+                                'border-emerald-300 text-emerald-700 bg-emerald-50': edit.price_type === 'FREE',
+                                'border-slate-200 text-slate-800 bg-white':         edit.price_type === 'FIXED',
+                              }"
+                            >
+                              <option value="FIXED">Fisso</option>
+                              <option value="FREE">Gratis</option>
+                              <option value="VARIABLE">Su richiesta</option>
+                            </select>
+                          </td>
+
+                          <!-- Prezzo (rendering condizionato null-safe) -->
+                          <td class="px-3 py-2 align-middle">
+                            <!-- VARIABLE → badge, price=null -->
+                            <span
+                              x-show="edit.price_type === 'VARIABLE'"
+                              class="inline-flex items-center gap-1.5 rounded-full bg-amber-100 text-amber-700 text-xs px-2.5 py-1 font-medium whitespace-nowrap"
+                            >
+                              <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                              Su richiesta
+                            </span>
+
+                            <!-- FREE → badge, price=0 (read-only) -->
+                            <span
+                              x-show="edit.price_type === 'FREE'"
+                              class="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 text-emerald-700 text-xs px-2.5 py-1 font-medium whitespace-nowrap"
+                            >
+                              <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                              Gratis
+                            </span>
+
+                            <!-- FIXED → input numerico con suffisso € -->
+                            <div x-show="edit.price_type === 'FIXED'" class="relative">
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                x-model.number="edit.price"
+                                placeholder="0.00"
+                                class="block w-full rounded-lg border pl-2.5 pr-7 py-1.5 text-sm text-slate-800 placeholder:text-slate-300 transition-colors duration-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                :class="(edit.price ?? null) !== (original.price ?? null) ? 'border-indigo-300 bg-indigo-50/60 ring-1 ring-indigo-200' : 'border-slate-200 bg-white'"
+                              />
+                              <span class="absolute inset-y-0 right-2.5 flex items-center pointer-events-none text-xs text-slate-400 select-none">€</span>
+                            </div>
+                          </td>
+
+                          <!-- Descrizione -->
+                          <td class="px-3 py-2 align-middle hidden lg:table-cell">
+                            <input
+                              type="text"
+                              x-model="edit.description"
+                              placeholder="—"
+                              class="block w-full rounded-lg border px-2.5 py-1.5 text-sm text-slate-500 placeholder:text-slate-300 transition-colors duration-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                              :class="(edit.description ?? '') !== (original.description ?? '') ? 'border-indigo-300 bg-indigo-50/60 ring-1 ring-indigo-200' : 'border-slate-200 bg-white/70'"
+                            />
+                          </td>
+
+                          <!-- Azioni -->
+                          <td class="px-3 pr-5 py-2 text-right align-middle">
+                            <div class="inline-flex items-center justify-end gap-1.5">
+                              <!-- Flash ✓ -->
+                              <span
+                                x-show="savedFlash"
+                                x-transition:enter="transition ease-out duration-150"
+                                x-transition:enter-start="opacity-0 scale-75"
+                                x-transition:enter-end="opacity-100 scale-100"
+                                x-transition:leave="transition ease-in duration-100"
+                                x-transition:leave-end="opacity-0"
+                                class="text-emerald-500"
+                                title="Salvato"
+                              >
+                                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+                              </span>
+
+                              <!-- Salva (solo se isDirty) -->
+                              <button
+                                @click="save()"
+                                :disabled="!isDirty || isSaving"
+                                title="Salva modifiche"
+                                class="inline-flex items-center gap-1 rounded px-2.5 py-1.5 text-xs font-medium transition-all duration-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1"
+                                :class="isDirty && !isSaving ? 'bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white shadow-sm shadow-indigo-500/20 cursor-pointer' : 'bg-slate-100 text-slate-300 cursor-not-allowed'"
+                              >
+                                <svg x-show="isSaving" class="spinner w-3 h-3" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg>
+                                <svg x-show="!isSaving" class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M7.707 10.293a1 1 0 10-1.414 1.414l3 3a1 1 0 001.414 0l3-3a1 1 0 00-1.414-1.414L11 11.586V6h5a2 2 0 012 2v7a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h5v5.586l-1.293-1.293z"/></svg>
+                                <span x-text="isSaving ? 'Salvataggio…' : 'Salva'"></span>
+                              </button>
+
+                              <!-- Reset (solo se isDirty) -->
+                              <button
+                                @click="discard()"
+                                :disabled="!isDirty || isSaving"
+                                title="Annulla modifiche"
+                                class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-all duration-100 focus:outline-none focus:ring-2 focus:ring-slate-300 focus:ring-offset-1"
+                                :class="isDirty && !isSaving ? 'border-slate-200 text-slate-500 hover:bg-slate-100 cursor-pointer' : 'border-slate-100 text-slate-300 cursor-not-allowed'"
+                              >
+                                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+                                Reset
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
 
                 <!-- Pagination footer -->
                 <div
@@ -681,7 +876,7 @@
                   class="flex items-center justify-between gap-3 px-4 py-2.5 border-t border-slate-200 bg-slate-50 text-xs text-slate-500"
                 >
                   <span>
-                    <span x-text="$store.catalog.skip + 1"></span>–<span x-text="Math.min($store.catalog.skip + $store.catalog.limit, $store.catalog.total)"></span>
+                    <span x-text="$store.catalog.rangeStart"></span>–<span x-text="$store.catalog.rangeEnd"></span>
                     di <span x-text="$store.catalog.total"></span>
                   </span>
                   <div class="flex gap-1">
@@ -700,98 +895,12 @@
               </div>
             </section>
 
-            <!-- ── Edit Modal ─────────────────────────────────────────────── -->
-            <template x-teleport="body">
-              <div
-                x-show="$store.catalog.modalOpen"
-                x-transition.opacity
-                class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
-                @click.self="$store.catalog.closeEdit()"
-              >
-                <div
-                  class="bg-white rounded-xl shadow-2xl w-full max-w-md flex flex-col"
-                  @click.stop
-                >
-                  <!-- Modal header -->
-                  <div class="flex items-center justify-between px-5 py-4 border-b border-slate-200">
-                    <h3 class="font-semibold text-slate-800">Modifica servizio</h3>
-                    <button
-                      class="text-slate-400 hover:text-slate-600 transition-colors"
-                      @click="$store.catalog.closeEdit()"
-                      aria-label="Chiudi"
-                    >
-                      <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                    </button>
-                  </div>
-
-                  <!-- Modal body -->
-                  <div class="px-5 py-4 flex flex-col gap-4">
-                    <label class="block">
-                      <span class="text-sm font-medium text-slate-700">Nome servizio</span>
-                      <input
-                        type="text"
-                        class="input-text mt-1"
-                        x-model="$store.catalog.editService"
-                        placeholder="es. Sito web vetrina"
-                      />
-                    </label>
-                    <label class="block">
-                      <span class="text-sm font-medium text-slate-700">Prezzo (€)</span>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        class="input-text mt-1"
-                        x-model.number="$store.catalog.editPrice"
-                      />
-                      <p
-                        x-show="$store.catalog.editPrice < 0"
-                        class="text-xs text-rose-600 mt-1"
-                      >Il prezzo non può essere negativo.</p>
-                    </label>
-                    <label class="block">
-                      <span class="text-sm font-medium text-slate-700">Descrizione / Note</span>
-                      <textarea
-                        class="input-text mt-1 h-20 resize-none"
-                        x-model="$store.catalog.editDescription"
-                        placeholder="Descrizione del servizio (opzionale)"
-                      ></textarea>
-                    </label>
-
-                    <!-- Save error -->
-                    <p
-                      x-show="$store.catalog.saveError"
-                      class="text-sm text-rose-600"
-                      x-text="$store.catalog.saveError"
-                    ></p>
-                  </div>
-
-                  <!-- Modal footer -->
-                  <div class="px-5 py-4 border-t border-slate-200 flex items-center justify-end gap-3">
-                    <button
-                      class="btn-ghost"
-                      @click="$store.catalog.closeEdit()"
-                      :disabled="$store.catalog.saving"
-                    >Annulla</button>
-                    <button
-                      class="btn-primary"
-                      :disabled="$store.catalog.saving || $store.catalog.editPrice < 0 || !$store.catalog.editService.trim()"
-                      @click="$store.catalog.saveEdit()"
-                    >
-                      <svg x-show="$store.catalog.saving" class="spinner w-4 h-4" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg>
-                      <span x-text="$store.catalog.saving ? 'Salvataggio…' : 'Salva'"></span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </template>
-
             <!-- ════════════════════════════════════════════════════════════ -->
             <!-- Impostazioni                                                  -->
             <!-- ════════════════════════════════════════════════════════════ -->
             <section x-show="view === 'settings'" class="flex flex-col gap-6 max-w-2xl">
               <div class="card">
-                <h2 class="font-semibold text-slate-800 mb-3">Stato sistema</h2>
+                <h2 class="font-semibold text-slate-900 mb-3">Connessione API</h2>
                 <dl class="space-y-2 text-sm">
                   <div class="flex justify-between gap-4">
                     <dt class="text-slate-500">API base URL</dt>
@@ -817,7 +926,7 @@
               </div>
 
               <div class="card">
-                <h2 class="font-semibold text-slate-800">Sessione corrente</h2>
+                <h2 class="font-semibold text-slate-900">Sessione corrente</h2>
                 <p class="text-sm text-slate-500 mt-1">
                   Il tenant è fissato dal token JWT della sessione.
                   Per cambiare tenant effettua logout e accedi con un username diverso.
@@ -836,7 +945,7 @@
 
               <div class="card">
                 <div class="flex items-center justify-between gap-3">
-                  <h2 class="font-semibold text-slate-800">Profilo azienda (per tenant)</h2>
+                  <h2 class="font-semibold text-slate-900">Profilo azienda (per tenant)</h2>
                   <span class="text-xs text-slate-400">Tenant: <span class="font-mono text-slate-600" x-text="$store.auth.tenantId || $store.connection.tenantId"></span></span>
                 </div>
                 <p class="text-sm text-slate-500 mt-1">
@@ -927,7 +1036,7 @@
               </div>
 
               <div class="card">
-                <h2 class="font-semibold text-slate-800">Coerenza air-gapped</h2>
+                <h2 class="font-semibold text-slate-900">Coerenza air-gapped</h2>
                 <p class="text-sm text-slate-500 mt-1">
                   Tutti gli asset (JS, CSS, font Inter / JetBrains Mono, icone SVG)
                   sono impacchettati localmente da Vite: nessuna dipendenza da CDN
